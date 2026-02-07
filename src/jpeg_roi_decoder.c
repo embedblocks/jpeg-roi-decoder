@@ -137,46 +137,47 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
 {
     decode_context_t *ctx = jd->device;
     uint16_t *src = bitmap;
-
+    
+    // Early rejection: MCU completely outside ROI
     if (rect->right  < ctx->roi.left  ||
         rect->left   > ctx->roi.right ||
         rect->bottom < ctx->roi.top   ||
         rect->top    > ctx->roi.bottom) {
         return 1;
     }
-
+    
     uint16_t mcu_w = rect->right - rect->left + 1;
-
+    
+    // Calculate overlap region
     uint16_t y_start = rect->top    < ctx->roi.top    ? ctx->roi.top    : rect->top;
     uint16_t y_end   = rect->bottom > ctx->roi.bottom ? ctx->roi.bottom : rect->bottom;
     uint16_t x_start = rect->left   < ctx->roi.left   ? ctx->roi.left   : rect->left;
     uint16_t x_end   = rect->right  > ctx->roi.right  ? ctx->roi.right  : rect->right;
-
+    
+    uint16_t copy_width = x_end - x_start + 1;  // Pixels to copy per row
+    
     for (uint16_t y = y_start; y <= y_end; y++) {
-
         uint16_t roi_y = y - ctx->roi.top;
-
-        uint16_t src_off =
-            (y - rect->top) * mcu_w + (x_start - rect->left);
-
-        for (uint16_t x = x_start; x <= x_end; x++) {
-
-            uint16_t roi_x = x - ctx->roi.left;
-
-            ctx->chunk_buffer[roi_x] = src[src_off++];
-            ctx->row_fill_count[roi_y]++;
-        }
-
-        if (ctx->row_fill_count[roi_y] == ctx->roi_width &&
-            !ctx->row_flushed[roi_y]) {
-
+        uint16_t roi_x = x_start - ctx->roi.left;
+        uint16_t src_off = (y - rect->top) * mcu_w + (x_start - rect->left);
+        
+        // OPTIMIZATION 1: Use memcpy instead of pixel-by-pixel loop
+        memcpy(&ctx->chunk_buffer[roi_x], 
+               &src[src_off], 
+               copy_width * sizeof(uint16_t));
+        
+        // OPTIMIZATION 2: Batch update fill count
+        uint16_t new_fill_count = ctx->row_fill_count[roi_y] + copy_width;
+        ctx->row_fill_count[roi_y] = new_fill_count;
+        
+        // OPTIMIZATION 3: Only check for row completion once per row
+        if (new_fill_count == ctx->roi_width && !ctx->row_flushed[roi_y]) {
             jpeg_chunk_info_t info = {
                 .x = 0,
                 .y = roi_y,
                 .width = ctx->roi_width,
                 .height = 1
             };
-
             jpeg_chunk_event_t evt = {
                 .pixels = ctx->chunk_buffer,
                 .chunk = &info,
@@ -184,19 +185,17 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
                 .byte_count  = ctx->roi_width * 2,
                 .user_data   = ctx->user_data
             };
-
+            
             if (ctx->chunk_cb && !ctx->chunk_cb(&evt)) {
                 ctx->abort = true;
                 return 0;
             }
-
             ctx->row_flushed[roi_y] = true;
         }
     }
-
+    
     return 1;
 }
-
 /* ================= RESULT MAP ================= */
 
 static jpeg_decode_result_t convert_result(JRESULT r)
