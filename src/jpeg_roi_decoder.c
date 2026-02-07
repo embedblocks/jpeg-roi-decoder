@@ -32,8 +32,10 @@ static const char *TAG = "jpeg_decoder";
 
 #ifndef CONFIG_JPEG_POOL_SIZE
 #define CONFIG_JPEG_POOL_SIZE 3100
+
 #endif
 
+#define JPEG_MAX_ROI_HEIGHT 480
 /* ================= STATE ================= */
 
 static QueueHandle_t decode_queue;
@@ -70,6 +72,12 @@ typedef struct {
 
     uint16_t current_row;   // current Y inside ROI being filled
     uint16_t row_filled;    // pixels filled in current row
+
+
+      /* --- row tracking (NO malloc) --- */
+    uint16_t row_fill_count[JPEG_MAX_ROI_HEIGHT];
+    bool     row_flushed[JPEG_MAX_ROI_HEIGHT];
+
 
     bool abort;
 } decode_context_t;
@@ -148,27 +156,23 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
 
         uint16_t roi_y = y - ctx->roi.top;
 
-        // If new row, reset row buffer
-        if (ctx->current_row != roi_y) {
-            ctx->current_row = roi_y;
-            ctx->row_filled = 0;
-        }
-
         uint16_t src_off =
             (y - rect->top) * mcu_w + (x_start - rect->left);
 
         for (uint16_t x = x_start; x <= x_end; x++) {
+
             uint16_t roi_x = x - ctx->roi.left;
+
             ctx->chunk_buffer[roi_x] = src[src_off++];
-            ctx->row_filled++;
+            ctx->row_fill_count[roi_y]++;
         }
 
-        // If row is complete, flush to LVGL
-        if (ctx->row_filled == ctx->roi_width) {
+        if (ctx->row_fill_count[roi_y] == ctx->roi_width &&
+            !ctx->row_flushed[roi_y]) {
 
             jpeg_chunk_info_t info = {
                 .x = 0,
-                .y = ctx->current_row,
+                .y = roi_y,
                 .width = ctx->roi_width,
                 .height = 1
             };
@@ -177,15 +181,16 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
                 .pixels = ctx->chunk_buffer,
                 .chunk = &info,
                 .pixel_count = ctx->roi_width,
-                .byte_count = ctx->roi_width * 2,
-                .user_data = ctx->user_data
+                .byte_count  = ctx->roi_width * 2,
+                .user_data   = ctx->user_data
             };
 
             if (ctx->chunk_cb && !ctx->chunk_cb(&evt)) {
+                ctx->abort = true;
                 return 0;
             }
 
-            ctx->row_filled = 0;
+            ctx->row_flushed[roi_y] = true;
         }
     }
 
@@ -252,6 +257,12 @@ static void decode_task(void *arg)
                 //flush_chunk(&ctx);
                 result = (jr == JDR_OK || ctx.abort) ? JPEG_DECODE_OK : convert_result(jr);
             }
+
+            for (uint16_t i = 0; i < ctx.roi_height; i++) {
+                ctx.row_fill_count[i] = 0;
+                ctx.row_flushed[i] = false;
+            }
+
         } else {
             result = convert_result(jr);
         }
