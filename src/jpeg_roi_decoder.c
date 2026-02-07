@@ -78,6 +78,8 @@ typedef struct {
     uint16_t row_fill_count[JPEG_MAX_ROI_HEIGHT];
     bool     row_flushed[JPEG_MAX_ROI_HEIGHT];
 
+    uint16_t flushed_rows_count;
+
 
     bool abort;
 } decode_context_t;
@@ -191,6 +193,12 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
                 return 0;
             }
             ctx->row_flushed[roi_y] = true;
+            ctx->flushed_rows_count++;
+            
+            if (ctx->flushed_rows_count == ctx->roi_height) {
+                return 0;   // STOP decoding immediately
+            }
+
         }
     }
     
