@@ -255,6 +255,7 @@ static void decode_task(void *arg)
             } else {
                 jr = tjpgd_sys_decomp(&jd, output_func, 0);
                 //flush_chunk(&ctx);
+                //Tell whether the call was successful or not and translate to the appropriate result code.
                 result = (jr == JDR_OK || ctx.abort) ? JPEG_DECODE_OK : convert_result(jr);
             }
 
