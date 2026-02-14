@@ -1,4 +1,4 @@
-#include "jpeg_roi_decoder.h"
+#include "jpeg_decoder.h"
 
 /* core entry */
 jpeg_decode_result_t
@@ -26,21 +26,23 @@ void jpeg_decoder_deinit(void)
 jpeg_decode_result_t
 jpeg_decoder_decode(const jpeg_decode_request_t *req)
 {
+    /*
     void *work = malloc(WORK_BUF_SIZE);
     if (!work)
         return JPEG_DECODE_ERR_MEM1;
+    */
 
     jpeg_done_event_t evt;
 
     jpeg_decode_result_t res =
         jpeg_decoder_core_run(req, &evt,
-                              work,
-                              WORK_BUF_SIZE);
+                              req->work_buffer,
+                              req->work_buffer_size);
 
     if (req->done_callback)
         req->done_callback(&evt);
 
-    free(work);
+    //free(work);
 
     return res;
 }
