@@ -1,4 +1,5 @@
-#include "jpeg_decoder.h"
+#include "jpeg_roi_decoder.h"
+
 
 /* core entry */
 jpeg_decode_result_t
