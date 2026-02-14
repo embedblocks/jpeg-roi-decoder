@@ -132,6 +132,8 @@ typedef struct {
     jpeg_roi_t roi;                 /* ROI in scaled space */
     jpeg_decode_scale_t scale;      /* downscaling factor */
 
+    void* work_buffer;
+    size_t work_buffer_size;
     uint16_t *chunk_buffer;         /* user-provided buffer */
     size_t chunk_buffer_pixels;     /* buffer size in pixels */
 
