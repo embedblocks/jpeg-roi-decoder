@@ -1,0 +1,4 @@
+dependencies:
+  sd-spi:
+    git: https://github.com/khiyamiftikhar/sd-spi.git
+    #version: development/remove-unused

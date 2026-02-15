@@ -1,0 +1,5 @@
+.vscode/
+build/
+.github/
+managed_components/
+sdkconfig
