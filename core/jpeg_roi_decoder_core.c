@@ -129,7 +129,6 @@ jpeg_decoder_core_run(
 ){
 
     decode_context_t ctx = {
-        .fp = req->fp,
         .roi = req->roi,
         .scale = req->scale,
         .chunk_buffer = req->chunk_buffer,
@@ -191,7 +190,6 @@ jpeg_decoder_core_run(
                                    : JPEG_DECODE_ERR_INTR;
 
     if (done_evt) {
-        done_evt->fp = req->fp;
         done_evt->result = result;
         done_evt->image.width = jd.width;
         done_evt->image.height = jd.height;

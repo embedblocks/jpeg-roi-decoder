@@ -86,7 +86,7 @@ typedef struct {
  * ============================================================ */
 
 typedef struct {
-    FILE *fp;                       /* input JPEG file */
+    //FILE *fp;                       /* input JPEG file */
     const uint16_t *pixels;         /* RGB565 pixels */
     const jpeg_chunk_info_t *chunk; /* chunk position */
     size_t pixel_count;             /* width * height */
@@ -127,8 +127,6 @@ typedef void (*jpeg_done_cb_t)(const jpeg_done_event_t *event);
  * ============================================================ */
 
 typedef struct {
-    FILE *fp;                       /* opened JPEG file */
-
     jpeg_roi_t roi;                 /* ROI in scaled space */
     jpeg_decode_scale_t scale;      /* downscaling factor */
 
