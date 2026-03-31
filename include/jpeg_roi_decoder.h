@@ -34,31 +34,35 @@ typedef enum {
     JPEG_DECODE_ERR_INTR,       /* tjpgd internal error          */
 } jpeg_decode_result_t;
 
-/** Returns a short human-readable string for any result code.
- *  Useful during development and for error logging.
- *  Always returns a valid non-NULL string.
- */
+/** Returns a short human-readable string for any result code. */
 const char *jpeg_decoder_err_to_str(jpeg_decode_result_t result);
 
 /* ============================================================
  *  Source abstraction
  *
  *  Decouples the decoder from any specific I/O backend.
- *  Use jpeg_decoder_source_from_file() or
- *  jpeg_decoder_source_from_buffer() for the common cases,
- *  or fill the struct directly for a custom backend
- *  (network stream, encrypted FS, custom SPIFFS handle, etc).
  *
- *  NOTE: On ESP32, any filesystem (SPIFFS, FATFS, LittleFS)
- *  must be mounted by the caller before passing a source.
- *  This component does not perform driver or FS initialization.
+ *  For FILE* sources, use the factory:
+ *    jpeg_source_t src = jpeg_decoder_source_from_file(fp);
+ *
+ *  For buffer sources, use the init function — NOT a factory —
+ *  because the source must track read position internally via
+ *  _buf, and ctx must point into the struct itself:
+ *    jpeg_source_t src;
+ *    jpeg_decoder_source_from_buffer(&src, data, len);
+ *
+ *  For custom backends, fill the struct directly:
+ *    jpeg_source_t src = { .read=my_read, .seek=my_seek, .ctx=my_handle };
+ *
+ *  NOTE: On ESP32, any filesystem (SPIFFS, FATFS, LittleFS) must be
+ *  mounted by the caller. This component does not initialize peripherals.
  * ============================================================ */
 
 typedef struct {
     /**
      * Read up to nbyte bytes into buf.
-     * If buf is NULL, skip nbyte bytes forward (seek-by-reading).
-     * Returns number of bytes consumed. Return 0 on error or EOF.
+     * If buf is NULL, skip nbyte bytes forward.
+     * Returns bytes consumed. Return 0 on error or EOF.
      */
     size_t (*read)(void *ctx, uint8_t *buf, size_t nbyte);
 
@@ -66,46 +70,68 @@ typedef struct {
     int    (*seek)(void *ctx, size_t offset);
 
     void *ctx;
+
+    /**
+     * Internal state for jpeg_decoder_source_from_buffer().
+     * Do not use or modify directly.
+     * For FILE* and custom sources this field is unused.
+     */
+    struct {
+        const uint8_t *data;
+        size_t         len;
+        size_t         pos;
+    } _buf;
 } jpeg_source_t;
 
-/** Wrap a stdio FILE* as a source. */
+/**
+ * Wrap a stdio FILE* as a source.
+ * Returns by value — safe to use as a factory.
+ */
 jpeg_source_t jpeg_decoder_source_from_file(FILE *fp);
 
 /**
- * Wrap an in-memory buffer as a source.
- * Suitable for images in rodata (flash), PSRAM, or DRAM.
+ * Initialize a buffer source in-place.
+ * Takes a pointer instead of returning by value because ctx must
+ * point into the struct itself — a factory return-by-value would
+ * produce a dangling pointer after the copy.
+ *
+ * Usage:
+ *   jpeg_source_t src;
+ *   jpeg_decoder_source_from_buffer(&src, data, len);
+ *
+ * Do NOT copy src after initializing — the internal ctx pointer
+ * would point into the original, not the copy.
  */
-jpeg_source_t jpeg_decoder_source_from_buffer(const uint8_t *data, size_t len);
+void jpeg_decoder_source_from_buffer(jpeg_source_t *src,
+                                      const uint8_t *data,
+                                      size_t         len);
 
 /* ============================================================
  *  Image info  (probe result)
  * ============================================================ */
 
 typedef struct {
-    uint16_t width;    /* original JPEG width  in pixels */
-    uint16_t height;   /* original JPEG height in pixels */
+    uint16_t width;
+    uint16_t height;
 } jpeg_image_info_t;
 
 /* ============================================================
  *  Decode scale
  *
  *  Maps 1:1 to TJpgDec's supported downscale factors.
- *  These are the only valid hardware-accelerated values —
- *  no intermediate scales exist in TJpgDec.
+ *  No intermediate values exist.
  *
- *  JPEG_SCALE_AUTO: the component picks the largest divisor
- *  such that the scaled image still covers the LCD in both
- *  dimensions. Recommended for most users.
- *
- *  Output dimensions = ceil(jpeg_dim / scale_divisor).
+ *  JPEG_SCALE_AUTO: component picks the largest divisor such
+ *  that the scaled image still covers the LCD in both dimensions.
+ *  Recommended for most users.
  * ============================================================ */
 
 typedef enum {
-    JPEG_SCALE_AUTO = -1, /* component chooses best fit for LCD  */
-    JPEG_SCALE_1_1  =  0, /* full resolution                     */
-    JPEG_SCALE_1_2,       /* 1/2 linear (1/4 area)               */
-    JPEG_SCALE_1_4,       /* 1/4 linear (1/16 area)              */
-    JPEG_SCALE_1_8,       /* 1/8 linear (1/64 area)              */
+    JPEG_SCALE_AUTO = -1,
+    JPEG_SCALE_1_1  =  0,
+    JPEG_SCALE_1_2,
+    JPEG_SCALE_1_4,
+    JPEG_SCALE_1_8,
 } jpeg_decode_scale_t;
 
 /* ============================================================
@@ -131,25 +157,24 @@ typedef struct {
 /* ============================================================
  *  Chunk event
  *
- *  Delivered to the chunk callback once per completed row.
- *
+ *  Delivered once per completed row.
  *  x, y     — position in output (LCD) pixel space.
  *  width    — guaranteed <= lcd_width (high-level API)
  *             or <= roi_width (low-level API).
- *  pixels   — RGB565 (uint16_t*) or RGB888 (uint8_t*),
- *             depending on out_format. Valid only during callback.
+ *  pixels   — valid only for the duration of the callback.
+ *             Do not store the pointer.
  * ============================================================ */
 
 typedef struct {
     uint16_t    x;
     uint16_t    y;
     uint16_t    width;
-    const void *pixels;
+    const void *pixels;       /* RGB565 uint16_t* or RGB888 uint8_t* */
     size_t      byte_count;
     void       *user_data;
 } jpeg_chunk_event_t;
 
-/** Return false to abort decoding. Result will be JPEG_DECODE_ABORTED. */
+/** Return false to abort. Result will be JPEG_DECODE_ABORTED. */
 typedef bool (*jpeg_chunk_cb_t)(const jpeg_chunk_event_t *evt);
 
 /* ============================================================
@@ -160,7 +185,7 @@ typedef struct {
     jpeg_decode_result_t  result;
     jpeg_image_info_t     image;        /* original JPEG dimensions          */
     jpeg_roi_t            roi_scaled;   /* decoded ROI in scaled pixel space */
-    jpeg_decode_scale_t   scale;        /* scale that was actually used      */
+    jpeg_decode_scale_t   scale;        /* scale actually used               */
     jpeg_output_format_t  out_format;
     void                 *user_data;
 } jpeg_done_event_t;
@@ -169,78 +194,57 @@ typedef void (*jpeg_done_cb_t)(const jpeg_done_event_t *evt);
 
 /* ============================================================
  *  Work buffer
- *
- *  TJpgDec requires ~3KB minimum. 4KB is a safe default.
- *  Larger buffers may improve performance on complex images.
- *  On ESP32 this buffer may live in DRAM or SPIRAM.
  * ============================================================ */
 
 #define JPEG_DECODER_WORK_BUF_MIN      3096U
 #define JPEG_DECODER_WORK_BUF_DEFAULT  4096U
 
 /* ============================================================
- *  ── HIGH-LEVEL API ──
- *
- *  Describe an LCD viewport and how to pan across the image.
- *  The component handles probe, scale selection, ROI math,
- *  clamping, chunk buffer allocation, and pixel format.
+ *  HIGH-LEVEL API
  *
  *  pan_x / pan_y are in LCD pixels, independent of scale:
- *    (0, 0)  = viewport centered on image  [default]
+ *    (0, 0)  = viewport centered on image
  *    (+x)    = viewport shifted right
  *    (+y)    = viewport shifted down
- *  Values that would push the viewport outside the image are
- *  clamped automatically — no out-of-bounds is possible.
+ *  Out-of-bounds values are clamped automatically.
  * ============================================================ */
 
 typedef struct {
     uint16_t lcd_width;
     uint16_t lcd_height;
-    int32_t  pan_x;          /* LCD pixels from center, clamped */
-    int32_t  pan_y;          /* LCD pixels from center, clamped */
-    jpeg_decode_scale_t  scale;      /* use JPEG_SCALE_AUTO for most cases */
+    int32_t  pan_x;
+    int32_t  pan_y;
+    jpeg_decode_scale_t  scale;
     jpeg_output_format_t out_format;
 } jpeg_view_t;
 
 /**
- * Returns a jpeg_view_t populated with safe defaults:
- *   pan  = (0,0)  — centered
- *   scale = JPEG_SCALE_AUTO
+ * Returns a jpeg_view_t with safe defaults:
+ *   pan    = (0, 0) — centered
+ *   scale  = JPEG_SCALE_AUTO
  *   format = JPEG_OUTPUT_RGB565
- *
- * Typical usage:
- *   jpeg_view_t view = jpeg_view_default(480, 320);
- *   view.pan_x = my_pan_x;   // override only what you need
  */
 jpeg_view_t jpeg_view_default(uint16_t lcd_width, uint16_t lcd_height);
 
 /* ============================================================
- *  ── LOW-LEVEL API ──
+ *  LOW-LEVEL API
  *
- *  Direct ROI and scale control for advanced users.
- *  Use for map tiling, thumbnail pipelines, or any case where
- *  you need precise control over the decoded region.
- *
- *  ROI coordinates are in ORIGINAL (unscaled) JPEG space.
- *  The component converts them to scaled space internally.
- *
- *  chunk_buffer must be caller-allocated and large enough to
- *  hold one full row of the ROI:
- *    chunk_buffer_pixels >= (roi.right - roi.left + 1) / scale_div
- *  The component returns JPEG_DECODE_ERR_PARAM if this is violated.
+ *  ROI in original (unscaled) JPEG coordinates.
+ *  chunk_buffer_pixels must be >= scaled ROI width.
+ *  JPEG_SCALE_AUTO is not valid here — use an explicit scale.
  * ============================================================ */
 
 typedef struct {
     jpeg_source_t        source;
-    jpeg_roi_t           roi;               /* original JPEG pixel space */
-    jpeg_decode_scale_t  scale;             /* JPEG_SCALE_AUTO not valid here */
+    jpeg_roi_t           roi;
+    jpeg_decode_scale_t  scale;
     jpeg_output_format_t out_format;
 
     void    *work_buffer;
     size_t   work_buffer_size;
 
-    uint16_t *chunk_buffer;                 /* caller-allocated, one row   */
-    size_t    chunk_buffer_pixels;          /* must be >= scaled ROI width */
+    uint16_t *chunk_buffer;
+    size_t    chunk_buffer_pixels;
 
     jpeg_chunk_cb_t chunk_callback;
     jpeg_done_cb_t  done_callback;
@@ -251,27 +255,12 @@ typedef struct {
  *  API
  * ============================================================ */
 
-/**
- * Initialize decoder runtime.
- * Required only on FreeRTOS (creates internal task + queue).
- * No-op on synchronous / host builds.
- */
 bool jpeg_decoder_init(void);
-
-/**
- * Deinitialize decoder runtime.
- */
 void jpeg_decoder_deinit(void);
 
 /**
- * Probe JPEG dimensions without decoding any pixel data.
- * Does not require jpeg_decoder_init().
- * Source position is restored to 0 after a successful probe,
- * so the same source can be passed directly to decode.
- *
- * Use this when you need image dimensions before deciding
- * how to display — e.g. building a navigation UI, choosing
- * a manual scale, or showing image info to the user.
+ * Probe JPEG dimensions without decoding pixel data.
+ * Source position is restored to 0 after a successful probe.
  */
 jpeg_decode_result_t jpeg_decoder_probe(
     jpeg_source_t        source,
@@ -281,11 +270,8 @@ jpeg_decode_result_t jpeg_decoder_probe(
 );
 
 /**
- * High-level decode. Internally probes, selects scale (if AUTO),
- * computes and clamps ROI, allocates chunk buffer, and decodes.
- *
- * Async  (FreeRTOS): returns immediately; done_callback fires on completion.
- * Sync   (host):     blocks until complete; done_callback fires before return.
+ * High-level decode. Probes, resolves AUTO scale, computes
+ * centered and clamped ROI, allocates chunk buffer internally.
  */
 jpeg_decode_result_t jpeg_decoder_decode_view(
     jpeg_source_t        source,
@@ -299,11 +285,7 @@ jpeg_decode_result_t jpeg_decoder_decode_view(
 
 /**
  * Low-level decode. Full ROI and scale control.
- * Caller is responsible for coordinate math and buffer sizing.
  * JPEG_SCALE_AUTO is not valid in jpeg_decode_request_t.
- *
- * Async  (FreeRTOS): returns immediately; done_callback fires on completion.
- * Sync   (host):     blocks until complete; done_callback fires before return.
  */
 jpeg_decode_result_t jpeg_decoder_decode(
     const jpeg_decode_request_t *req
