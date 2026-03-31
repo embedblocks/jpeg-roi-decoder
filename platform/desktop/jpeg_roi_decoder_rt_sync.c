@@ -1,50 +1,49 @@
+/* jpeg_decoder_sync.c
+ *
+ * Platform adapter for synchronous builds (host / Windows testing).
+ * On FreeRTOS this file is replaced by jpeg_decoder_rtos.c which
+ * dispatches jpeg_decoder_core_run() through a task/queue.
+ */
+
 #include "jpeg_roi_decoder.h"
 
-
-/* core entry */
+/* Declared in jpeg_decoder_core.c */
 jpeg_decode_result_t
 jpeg_decoder_core_run(
     const jpeg_decode_request_t *req,
-    jpeg_done_event_t *done_evt,
-    void *workbuf,
-    size_t workbuf_size
+    jpeg_done_event_t           *done_evt,
+    void                        *workbuf,
+    size_t                       workbuf_size
 );
 
+/* ---------------------------------------------------------- */
 
 bool jpeg_decoder_init(void)
 {
-    return true;
+    return true;   /* nothing to init on sync platform */
 }
 
 void jpeg_decoder_deinit(void)
 {
 }
 
-
-
-#define WORK_BUF_SIZE 4096
-
 jpeg_decode_result_t
 jpeg_decoder_decode(const jpeg_decode_request_t *req)
 {
-    /*
-    void *work = malloc(WORK_BUF_SIZE);
-    if (!work)
-        return JPEG_DECODE_ERR_MEM1;
-    */
+    if (!req || !req->work_buffer)
+        return JPEG_DECODE_ERR_PARAM;
 
-    jpeg_done_event_t evt;
+    jpeg_done_event_t evt = {0};
 
-    jpeg_decode_result_t res =
-        jpeg_decoder_core_run(req, &evt,
-                              req->work_buffer,
-                              req->work_buffer_size);
+    jpeg_decode_result_t res = jpeg_decoder_core_run(
+        req, &evt,
+        req->work_buffer,
+        req->work_buffer_size
+    );
 
+    /* Fire done callback even on failure so caller can always clean up */
     if (req->done_callback)
         req->done_callback(&evt);
 
-    //free(work);
-
     return res;
 }
-
