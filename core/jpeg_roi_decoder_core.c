@@ -3,9 +3,10 @@
 #include "jpeg_decoder_internal.h"
 #include "tjpgd.h"
 #include "tjpgd_sys.h"
-
+#include <esp_log.h>
 #include <string.h>
 
+static const char *TAG = "JD_CORE";
 /* ============================================================
  *  Public helpers
  * ============================================================ */
@@ -133,6 +134,14 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
         rect->top    > ctx->roi.bottom)
         return 1;
 
+    
+    if (rect->left == 304 && rect->top == 48) {
+    ESP_LOGI("MCU", "last MCU of band 3 — "
+             "chunk_buf[12*320]=%u chunk_buf[12*320+160]=%u",
+             ctx->chunk_buffer[12 * ctx->roi_width],
+             ctx->chunk_buffer[12 * ctx->roi_width + 160]);
+    }
+
     uint16_t mcu_w   = rect->right - rect->left + 1;
     uint16_t y_start = rect->top    < ctx->roi.top    ? ctx->roi.top    : rect->top;
     uint16_t y_end   = rect->bottom > ctx->roi.bottom ? ctx->roi.bottom : rect->bottom;
@@ -162,6 +171,18 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
 
         if (ctx->row_fill_count[roi_y] >= ctx->roi_width &&
             !ctx->row_flushed[roi_y]) {
+
+            /* targeted log around the known failure boundary */
+            uint16_t slot = roi_y % JPEG_MCU_MAX_HEIGHT;
+            if (roi_y >= 55 && roi_y <= 65) {
+                ESP_LOGI("FLUSH", "roi_y=%u slot=%u fill=%u "
+                "buf[slot*w+0]=%u buf[slot*w+160]=%u buf[slot*w+319]=%u",
+                 roi_y, slot, ctx->row_fill_count[roi_y],
+                 ctx->chunk_buffer[slot * ctx->roi_width + 0],
+                 ctx->chunk_buffer[slot * ctx->roi_width + 160],
+                 ctx->chunk_buffer[slot * ctx->roi_width + 319]);
+            //Targeted log end
+            }
 
             jpeg_chunk_event_t evt = {
                 .x         = 0,
