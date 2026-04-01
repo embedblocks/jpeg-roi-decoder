@@ -32,6 +32,10 @@ while True:
     if "READY" in line or "trigger" in line.lower():
         break
 
+# Flush BEFORE trigger — ESP hasn't sent anything yet so nothing is lost.
+# Do NOT flush after trigger — ESP starts streaming immediately on receipt.
+ser.reset_input_buffer()
+
 print("[+] Sending trigger...")
 ser.write(b'\x01')
 ser.flush()

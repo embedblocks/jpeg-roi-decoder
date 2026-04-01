@@ -10,6 +10,10 @@
 #define LCD_W   320
 #define LCD_H   240
 
+#define UART_SENT 1   // 1 = enable, 0 = disable
+
+
+
 /* Embedded JPEG */
 extern const uint8_t test_jpg_start[] asm("_binary_test_jpg_start");
 extern const uint8_t test_jpg_end[]   asm("_binary_test_jpg_end");
@@ -42,10 +46,37 @@ static bool on_chunk(const jpeg_chunk_event_t *evt)
         /* Can't use ESP_LOGE here — logs corrupt the binary stream! */
         return false;
     }
+
+    const uint16_t *p = (const uint16_t*)evt->pixels;
+
+    /*
+    ESP_LOGI(TAG,
+        "ROW %u: p[0]=%u p[1]=%u p[2]=%u p[160]=%u p[319]=%u",
+        evt->y,
+        p[0], p[1], p[2],
+        p[160],
+        p[319]
+    );
+    */
+
+    const uint8_t *b = (const uint8_t*)evt->pixels;
+
+    /*
+    ESP_LOGI(TAG,
+        "BYTES: [%02X %02X] [%02X %02X] [%02X %02X]",
+        b[0], b[1],
+        b[2], b[3],
+        b[4], b[5]
+    );*/
+
+    #if UART_SENT
+    
     ssize_t written = write(1, evt->pixels, evt->byte_count);
     if (written != (ssize_t)evt->byte_count) {
         return false;
     }
+
+    #endif
     return true;
 }
 
@@ -65,6 +96,8 @@ static void on_done(const jpeg_done_event_t *evt)
 void app_main(void)
 {
     /* --- 1. Reconfigure console UART to 921600 --- */
+
+    #if UART_SENT
     uart_config_t uart_config = {
         .baud_rate  = 921600,
         .data_bits  = UART_DATA_8_BITS,
@@ -81,7 +114,8 @@ void app_main(void)
     uint8_t start = 0;
     read(0, &start, 1);
     ESP_LOGI(TAG, "Trigger received (0x%02X), starting stream", start);
-
+    uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100));
+    
     /* --- 3. Send binary header --- */
     img_header_t hdr = {
         .magic  = 0xDEADBEEF,
@@ -89,12 +123,16 @@ void app_main(void)
         .height = LCD_H,
         .format = 0,
     };
-    write(1, &hdr, sizeof(hdr));
 
     /* --- 4. Silence ALL logs before binary streaming ---
      *        ESP_LOGI/LOGE write to stdout (fd 1) which is the same
      *        pipe Python reads — any log text corrupts the image!    */
     esp_log_level_set("*", ESP_LOG_NONE);
+
+    write(1, &hdr, sizeof(hdr));
+
+
+    #endif
 
     /* --- 5. Init decoder and set up source --- */
     jpeg_decoder_init();
@@ -120,4 +158,6 @@ void app_main(void)
     /* --- 7. Re-enable logs, done streaming --- */
     esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI(TAG, "Streaming finished");
+
+
 }
