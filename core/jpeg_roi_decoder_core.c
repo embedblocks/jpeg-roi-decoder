@@ -59,6 +59,7 @@ jpeg_decode_scale_t jpeg_decoder_auto_scale(
 /* ============================================================
  *  Internal decode context
  * ============================================================ */
+#define JPEG_MAX_ROI_HEIGHT  512u
 
 typedef struct {
     jpeg_source_t        source;
