@@ -1,162 +1,121 @@
-
-#include <stdio.h>
-#include <string.h>
 #include <unistd.h>
-#include "jpeg_roi_decoder.h"
-#include "driver/uart.h"
+#include <string.h>
 #include "esp_log.h"
+#include "driver/uart.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "jpeg_roi_decoder.h"
 
-#define TAG "JPEG_UART"
+#define TAG     "JPEG_UART"
+#define LCD_W   320
+#define LCD_H   240
 
-#define LCD_W 320
-#define LCD_H 240
+// Embedded JPEG
+extern const uint8_t test_jpg_start[] asm("_binary_test_jpg_start");
+extern const uint8_t test_jpg_end[]   asm("_binary_test_jpg_end");
 
-#define UART_PORT UART_NUM_0
-#define UART_TX   17
-#define UART_RX   16
-#define BAUD_RATE 921600
-
-// Embedded JPEG 
-
-    extern const uint8_t test_jpg_start[] asm("_binary_test_jpg_start");
-    extern const uint8_t test_jpg_end[]   asm("_binary_test_jpg_end");
-
-
-//Work buffer 
+// Work buffer
 static uint8_t workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
 
-// Row buffer (ONLY ONE ROW!) 
-static uint16_t rowbuf[LCD_W];
-
-// Stream header 
+// Stream header
 typedef struct {
     uint32_t magic;
     uint16_t width;
     uint16_t height;
-    uint8_t  format;   // 0 = RGB565
-} img_header_t;
+    uint8_t  format;  // 0 = RGB565
+} __attribute__((packed)) img_header_t;
 
-// Context 
-typedef struct {
-    int uart;
-} stream_ctx_t;
-
-/// Chunk callback
+// -------------------------------------------------------
+// on_chunk — called once per decoded row
+// -------------------------------------------------------
 static bool on_chunk(const jpeg_chunk_event_t *evt)
 {
-    stream_ctx_t *ctx = (stream_ctx_t*)evt->user_data;
-
-    if (evt->width != LCD_W){
-
-        ESP_LOGE(TAG, "Invalid chunk size (%u)",
-                 evt->width);
-             //    evt->chunk->height);
+    if (evt->width != LCD_W) {
+        // Can't use ESP_LOGE here — logs corrupt the binary stream!
+        // Just abort silently
         return false;
     }
 
-    //uart_write_bytes(ctx->uart,
-      //               (const char*)evt->pixels,
-        //             evt->byte_count);
-
-    
-
-    write(1, evt->pixels, evt->byte_count);
-
+    ssize_t written = write(1, evt->pixels, evt->byte_count);
+    if (written != (ssize_t)evt->byte_count) {
+        return false;
+    }
     return true;
 }
-// Done callback 
+
+// -------------------------------------------------------
+// on_done — called when decode finishes
+// -------------------------------------------------------
 static void on_done(const jpeg_done_event_t *evt)
 {
-    if (evt->result != JPEG_DECODE_OK) {
-        ESP_LOGE(TAG, "Decode failed: %s",
-                 jpeg_decoder_err_to_str(evt->result));
-    } else {
-        ESP_LOGI(TAG, "Decode complete");
-    }
+    // !! Do NOT write() any text here — it would corrupt the binary stream
+    // !! Do NOT ESP_LOGI here — stdout = fd1 = same pipe as image data
+    // Logging is re-enabled after decode in app_main
+    (void)evt;
 }
 
-static void uart_init(void)
-{
-    uart_config_t cfg = {
-        .baud_rate = 921600,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
-    };
-
-    ESP_ERROR_CHECK(uart_driver_install(UART_PORT, 4096, 0, 0, NULL, 0));
-    ESP_ERROR_CHECK(uart_param_config(UART_PORT, &cfg));
-    ESP_ERROR_CHECK(uart_set_pin(UART_PORT,
-                                UART_TX,
-                                UART_RX,
-                                UART_PIN_NO_CHANGE,
-                                UART_PIN_NO_CHANGE));
-}
-
+// -------------------------------------------------------
+// app_main
+// -------------------------------------------------------
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Starting JPEG UART stream example");
+    // --- 1. Reconfigure console UART to 921600 ---
+    uart_config_t uart_config = {
+        .baud_rate  = 921600,
+        .data_bits  = UART_DATA_8_BITS,
+        .parity     = UART_PARITY_DISABLE,
+        .stop_bits  = UART_STOP_BITS_1,
+        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
+    };
+    uart_param_config(UART_NUM_0, &uart_config);
+    vTaskDelay(pdMS_TO_TICKS(100));  // let baud change settle
 
-    uart_init();
-    jpeg_decoder_init();
+    // --- 2. Signal ready and wait for trigger ---
+    ESP_LOGI(TAG, "=== READY, waiting for trigger ===");
+    fflush(stdout);
 
+    uint8_t start = 0;
+    read(0, &start, 1);
+    ESP_LOGI(TAG, "Trigger received (0x%02X), starting stream", start);
 
-    size_t jpg_size = test_jpg_end - test_jpg_start;
-
-    jpeg_source_t src;
-    jpeg_decoder_source_from_buffer(
-        &src,
-        test_jpg_start,
-        jpg_size
-    );
-
-    jpeg_view_t view = jpeg_view_default(LCD_W, LCD_H);
-    view.out_format = JPEG_OUTPUT_RGB565;
-    
-
-
-  //Send header 
-
-
+    // --- 3. Send binary header ---
     img_header_t hdr = {
         .magic  = 0xDEADBEEF,
         .width  = LCD_W,
         .height = LCD_H,
-        .format = 0
+        .format = 0,
     };
-
-
-    uint8_t start;
-
-    ESP_LOGI(TAG, "Waiting for PC trigger...");
-
-    uart_read_bytes(UART_PORT, &start, 1, portMAX_DELAY);
-
-    ESP_LOGI(TAG, "Trigger received, starting stream");
-    //uart_write_bytes(UART_PORT,
-      //               (const char*)&hdr,
-        //             sizeof(hdr));
-
     write(1, &hdr, sizeof(hdr));
-    stream_ctx_t ctx = {
-        .uart = UART_PORT
-    };
 
+    // --- 4. Silence ALL logs before binary streaming ---
+    //        ESP_LOGI/LOGE write to stdout (fd 1) which is the same
+    //        pipe Python reads — any log text corrupts the image!
+    esp_log_level_set("*", ESP_LOG_NONE);
+
+    // --- 5. Init decoder and set up source ---
+    jpeg_decoder_init();
+
+    size_t jpg_size = test_jpg_end - test_jpg_start;
+    jpeg_source_t src;
+    jpeg_decoder_source_from_buffer(&src, test_jpg_start, jpg_size);
+
+    jpeg_view_t view  = jpeg_view_default(LCD_W, LCD_H);
+    view.out_format   = JPEG_OUTPUT_RGB565;
+
+    // --- 6. Decode — rows stream via on_chunk() ---
     jpeg_decoder_decode_view(
         src,
         &view,
         workbuf, sizeof(workbuf),
         on_chunk,
         on_done,
-        &ctx
+        NULL
     );
 
+    // --- 7. Re-enable logs, we're done streaming ---
+    esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI(TAG, "Streaming finished");
 }
-
-
-
 /*
 #include <stdio.h>
 #include <unistd.h>
