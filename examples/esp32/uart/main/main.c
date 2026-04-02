@@ -2,6 +2,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "driver/uart.h"
+#include "driver/uart_vfs.h" // ← with this one
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "jpeg_roi_decoder.h"
@@ -95,46 +96,40 @@ static void on_done(const jpeg_done_event_t *evt)
  * ------------------------------------------------------- */
 void app_main(void)
 {
-    /* --- 1. Reconfigure console UART to 921600 --- */
+    // Install driver FIRST — keeps VFS console working
+    uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0);
+    uart_vfs_dev_use_driver(0);      // new
 
-    #if UART_SENT
-    uart_config_t uart_config = {
-        .baud_rate  = 921600,
-        .data_bits  = UART_DATA_8_BITS,
-        .parity     = UART_PARITY_DISABLE,
-        .stop_bits  = UART_STOP_BITS_1,
-        .flow_ctrl  = UART_HW_FLOWCTRL_DISABLE,
-    };
-    uart_param_config(UART_NUM_0, &uart_config);
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    /* --- 2. Signal ready and wait for trigger --- */
+    // ESP_LOGI still works, AND uart_read_bytes now works
     ESP_LOGI(TAG, "=== READY, waiting for trigger ===");
     fflush(stdout);
-    uint8_t start = 0;
-    read(0, &start, 1);
-    ESP_LOGI(TAG, "Trigger received (0x%02X), starting stream", start);
-    uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(100));
-    
-    /* --- 3. Send binary header --- */
+
+    uint8_t trigger = 0;
+    uart_read_bytes(UART_NUM_0, &trigger, 1, portMAX_DELAY);  // truly blocking
+    ESP_LOGI(TAG, "Trigger 0x%02X received — switching baud", trigger);
+    fflush(stdout);
+    vTaskDelay(pdMS_TO_TICKS(600));  // let that log line finish at 115200
+
+    // Now switch to 921600
+    uart_config_t uart_cfg = {
+        .baud_rate = 921600,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    };
+    uart_param_config(UART_NUM_0, &uart_cfg);
+    vTaskDelay(pdMS_TO_TICKS(50));
+
+    // Send header + pixels
     img_header_t hdr = {
         .magic  = 0xDEADBEEF,
         .width  = LCD_W,
         .height = LCD_H,
         .format = 0,
     };
+    uart_write_bytes(UART_NUM_0, (const char*)&hdr, sizeof(hdr));
 
-    /* --- 4. Silence ALL logs before binary streaming ---
-     *        ESP_LOGI/LOGE write to stdout (fd 1) which is the same
-     *        pipe Python reads — any log text corrupts the image!    */
-    esp_log_level_set("*", ESP_LOG_NONE);
-
-    write(1, &hdr, sizeof(hdr));
-
-
-    #endif
-
-    /* --- 5. Init decoder and set up source --- */
     jpeg_decoder_init();
 
     static jpeg_source_t src;   /* static — ctx points into struct */
@@ -158,6 +153,5 @@ void app_main(void)
     /* --- 7. Re-enable logs, done streaming --- */
     esp_log_level_set("*", ESP_LOG_INFO);
     ESP_LOGI(TAG, "Streaming finished");
-
 
 }
