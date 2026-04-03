@@ -99,24 +99,28 @@ g8 = g8.reshape(height, width)
 b8 = b8.reshape(height, width)
 
 # ── 8. Verification (your original loop style preserved) ──────────────────────
-errors = 0
-for y in range(height):
-    for x in range(width):
-        expected_r = int(x * 255 / (width - 1)) & 0xF8
-        expected_g = int(y * 255 / (height - 1)) & 0xFC
+# ── 8. Sanity check (not pixel-exact — real JPEG has unknown values) ──────────
+print(f"\n[7] Checking image sanity...")
 
-        got_r = int(r8[y, x])
-        got_g = int(g8[y, x])
+flat_r = r8.flatten().astype(np.uint16)
+flat_g = g8.flatten().astype(np.uint16)
+flat_b = b8.flatten().astype(np.uint16)
 
-        if abs(got_r - expected_r) > 8 or abs(got_g - expected_g) > 8:
-            if errors < 20:
-                print(f"ERROR at ({x},{y}): "
-                      f"R got={got_r} expected={expected_r}  "
-                      f"G got={got_g} expected={expected_g}")
-            errors += 1
+all_zero = np.all(flat_r == 0) and np.all(flat_g == 0) and np.all(flat_b == 0)
 
-print(f"\n[7] Total errors: {errors} / {width*height} pixels")
+all_same = (np.unique(flat_r).size == 1 and
+            np.unique(flat_g).size == 1 and
+            np.unique(flat_b).size == 1)
 
+if all_zero:
+    print("  ❌ Image is all zeros — transfer failed")
+elif all_same:
+    print("  ❌ Image is a flat color — likely corrupt")
+else:
+    print(f"  ✅ Image looks valid")
+    print(f"     R range: {flat_r.min()}–{flat_r.max()}")
+    print(f"     G range: {flat_g.min()}–{flat_g.max()}")
+    print(f"     B range: {flat_b.min()}–{flat_b.max()}")
 # ── 9. Save image ─────────────────────────────────────────────────────────────
 out = np.stack([r8, g8, b8], axis=2).astype(np.uint8)
 Image.fromarray(out).save("received.png")
