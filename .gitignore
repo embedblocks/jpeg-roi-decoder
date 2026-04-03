@@ -7,4 +7,5 @@ managed_components/
 sdkconfig
 *.png
 *.raw
+graveyard/
 dependencies.lock
