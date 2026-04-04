@@ -1,0 +1,29 @@
+menu "SD Card (SDSPI)"
+
+config SD_SPI_HOST
+    int "SPI host number"
+    default 2
+    help
+        SPI host to use (SPI2_HOST or SPI3_HOST)
+
+config SD_SPI_MOSI
+    int "MOSI GPIO"
+    default 23
+
+config SD_SPI_MISO
+    int "MISO GPIO"
+    default 19
+
+config SD_SPI_SCLK
+    int "SCLK GPIO"
+    default 18
+
+config SD_SPI_CS
+    int "CS GPIO"
+    default 5
+
+config SD_MOUNT_POINT
+    string "Mount point"
+    default "/sdcard"
+
+endmenu
