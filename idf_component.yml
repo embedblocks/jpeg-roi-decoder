@@ -36,3 +36,5 @@ files:
       - "*.jpg"
       - "*.jpeg"
       - "*.png"
+      - "*.bin"
+      
