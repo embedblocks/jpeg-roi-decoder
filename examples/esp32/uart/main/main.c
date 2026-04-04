@@ -6,7 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "jpeg_roi_decoder.h"
-
+//#include "heatmap.h" 
 
 #define TAG     "JPEG_UART"
 #define LCD_W   320
@@ -17,8 +17,8 @@
 
 
 /* Embedded JPEG */
-extern const uint8_t test_jpg_start[] asm("_binary_heatmap_jpg_start");
-extern const uint8_t test_jpg_end[]   asm("_binary_heatmap_jpg_end");
+extern const uint8_t test_jpg_start[] asm("_binary_flower_jpg_start");
+extern const uint8_t test_jpg_end[]   asm("_binary_flower_jpg_end");
 
 /* Work buffer */
 static uint8_t workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
@@ -49,33 +49,15 @@ static bool on_chunk(const jpeg_chunk_event_t *evt)
         return false;
     }
 
-    const uint16_t *p = (const uint16_t*)evt->pixels;
-
-    /*
-    ESP_LOGI(TAG,
-        "ROW %u: p[0]=%u p[1]=%u p[2]=%u p[160]=%u p[319]=%u",
-        evt->y,
-        p[0], p[1], p[2],
-        p[160],
-        p[319]
-    );
-    */
-
-    const uint8_t *b = (const uint8_t*)evt->pixels;
-
-    /*
-    ESP_LOGI(TAG,
-        "BYTES: [%02X %02X] [%02X %02X] [%02X %02X]",
-        b[0], b[1],
-        b[2], b[3],
-        b[4], b[5]
-    );*/
-
-
+    
     static int count=0;
+    //ESP_LOGI("CHK", "offset=%d chunk=%d", count, evt->byte_count);
+    
     //size_t written= uart_write_bytes(UART_NUM_0, (const char*)&heatmap_map[count], evt->byte_count);
     //count=count+evt->byte_count;
+    
     size_t written= uart_write_bytes(UART_NUM_0, (const char*)evt->pixels, evt->byte_count);
+    uart_wait_tx_done(UART_NUM_0, portMAX_DELAY);
     
     if (written != (ssize_t)evt->byte_count) {
         return false;
@@ -94,11 +76,9 @@ static void on_done(const jpeg_done_event_t *evt)
     (void)evt;
 }
 
-/* -------------------------------------------------------
- * app_main
- * ------------------------------------------------------- */
-void app_main(void)
-{
+
+void uart_comm_init(){
+
     // Install driver FIRST — keeps VFS console working
     uart_driver_install(UART_NUM_0, 256, 0, 0, NULL, 0);
     uart_vfs_dev_use_driver(0);      // new
@@ -133,6 +113,14 @@ void app_main(void)
     };
     uart_write_bytes(UART_NUM_0, (const char*)&hdr, sizeof(hdr));
 
+}
+/* -------------------------------------------------------
+ * app_main
+ * ------------------------------------------------------- */
+void app_main(void)
+{
+    
+    uart_comm_init();
     jpeg_decoder_init();
 
     static jpeg_source_t src;   /* static — ctx points into struct */
@@ -143,7 +131,10 @@ void app_main(void)
     view.out_format   = JPEG_OUTPUT_RGB565;
     view.chunk_buffer = chunk_buf;   /* provide buffer — no malloc inside */
 
-    /* --- 6. Decode — rows stream via on_chunk() --- */
+    //uart_write_bytes(UART_NUM_0, (const char*)heatmap_map, 320*240*2);
+
+    
+    //- 6. Decode — rows stream via on_chunk() --- 
     jpeg_decoder_decode_view(
         src,
         &view,
@@ -153,8 +144,9 @@ void app_main(void)
         NULL
     );
 
+    
     /* --- 7. Re-enable logs, done streaming --- */
-    esp_log_level_set("*", ESP_LOG_INFO);
-    ESP_LOGI(TAG, "Streaming finished");
+    //esp_log_level_set("*", ESP_LOG_INFO);
+        ESP_LOGI(TAG, "Streaming finished");
 
 }
