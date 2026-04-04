@@ -38,14 +38,14 @@ Built on [TJpgDec](http://elm-chan.org/fsw/tjpgd/) with an LCD-aware API that ha
 ## Using ESP-IDF Component Manager (Recommended)
 
 ```bash
-idf.py add-dependency "jpeg_roi_decoder^1.0.0"
+idf.py add-dependency "jpeg_roi_decoder^0.1.0"
 ```
 
 Or in your project's `idf_component.yml`:
 
 ```yaml
 dependencies:
-  jpeg_roi_decoder: "^1.0.0"
+  jpeg_roi_decoder: "^0.1.0"
 ```
 
 Then configure via:
@@ -117,8 +117,8 @@ For complete examples see the `examples/` directory.
 
 # Examples
 
-* `examples/lcd_display` — High-level API, JPEG pan/zoom on an LCD
-* `examples/tile_decode` — Low-level API, direct ROI tile extraction
+* `examples/uart` — Decodes a file and send through uart to PC where image_rcv.py can be used to read
+* `examples/sdcard` — Reads from sdcard module and write back the decode raw rgb565 file to it
 
 ---
 
