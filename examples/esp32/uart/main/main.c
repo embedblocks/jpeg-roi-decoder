@@ -7,6 +7,7 @@
 #include "freertos/task.h"
 #include "jpeg_roi_decoder.h"
 
+
 #define TAG     "JPEG_UART"
 #define LCD_W   320
 #define LCD_H   240
@@ -70,14 +71,16 @@ static bool on_chunk(const jpeg_chunk_event_t *evt)
         b[4], b[5]
     );*/
 
-    #if UART_SENT
+
+    static int count=0;
+    //size_t written= uart_write_bytes(UART_NUM_0, (const char*)&heatmap_map[count], evt->byte_count);
+    //count=count+evt->byte_count;
+    size_t written= uart_write_bytes(UART_NUM_0, (const char*)evt->pixels, evt->byte_count);
     
-    ssize_t written = write(1, evt->pixels, evt->byte_count);
     if (written != (ssize_t)evt->byte_count) {
         return false;
     }
 
-    #endif
     return true;
 }
 
