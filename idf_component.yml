@@ -1,0 +1,38 @@
+
+version: "0.1.0"
+description: >
+  Region-of-interest JPEG decoder for ESP32. Decodes any rectangular
+  sub-region of a JPEG without loading the full image, streaming output
+  row-by-row so no full-frame buffer is required. Designed for LCD display
+  use cases — provide your display dimensions and a pan offset, and the
+  component handles scale selection, ROI math, and clamping internally.
+  Built on TJpgDec. Supports FILE*, flash blobs, and PSRAM buffers as
+  input sources. Runs on ESP32 (FreeRTOS async) and desktop (synchronous,
+  for host testing).
+
+url: "https://github.com/embedblocks/jpeg-roi-decoder"
+
+dependencies:
+  idf:
+    version: ">=5.0.0"
+
+tags:
+  - jpeg
+  - image
+  - lcd
+  - display
+  - streaming
+  - tjpgd
+  - rgb565
+
+files:
+   use_gitignore: true
+   exclude:
+      - ".git/**/*"
+      - "docs/**/*"
+      - "dist/**/*"
+      - "*.docx"
+      - "README.txt"
+      - "*.jpg"
+      - "*.jpeg"
+      - "*.png"
