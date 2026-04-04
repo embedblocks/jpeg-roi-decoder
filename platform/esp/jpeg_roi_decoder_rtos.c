@@ -38,16 +38,17 @@ static void jpeg_worker_task(void *arg)
 
         jpeg_done_event_t evt = {0};
 
-        jpeg_decoder_core_run(
-            &req, &evt,
-            req.work_buffer,
-            req.work_buffer_size
-        );
+        jpeg_decode_result_t res =jpeg_decoder_core_run(
+                                    &req, &evt,
+                                    req.work_buffer,
+                                    req.work_buffer_size
+                                );
 
         /*
          * Always fire done_callback — view_done_wrapper relies on this
          * to free the heap-allocated chunk buffer and wrapper context.
          */
+        evt.result = res;   // ← overwrite whatever core_run may or may not have set
         if (req.done_callback)
             req.done_callback(&evt);
     }
