@@ -16,8 +16,8 @@
 
 
 /* Embedded JPEG */
-extern const uint8_t test_jpg_start[] asm("_binary_test_jpg_start");
-extern const uint8_t test_jpg_end[]   asm("_binary_test_jpg_end");
+extern const uint8_t test_jpg_start[] asm("_binary_heatmap_jpg_start");
+extern const uint8_t test_jpg_end[]   asm("_binary_heatmap_jpg_end");
 
 /* Work buffer */
 static uint8_t workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
