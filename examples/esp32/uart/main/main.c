@@ -131,7 +131,11 @@ void app_main(void)
     view.out_format   = JPEG_OUTPUT_RGB565;
     view.chunk_buffer = chunk_buf;   /* provide buffer — no malloc inside */
 
-    //uart_write_bytes(UART_NUM_0, (const char*)heatmap_map, 320*240*2);
+    view.scale= JPEG_SCALE_1_1;  // no scaling
+
+    view.pan_x= 10; // pan right by 10 pixels
+    view.pan_y= 10; // pan up by 10 pixels
+    
 
     
     //- 6. Decode — rows stream via on_chunk() --- 
