@@ -33,8 +33,5 @@ files:
       - "dist/**/*"
       - "*.docx"
       - "README.txt"
-      - "*.jpg"
-      - "*.jpeg"
       - "*.png"
       - "*.bin"
-      
