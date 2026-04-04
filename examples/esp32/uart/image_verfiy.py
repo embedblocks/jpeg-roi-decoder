@@ -99,6 +99,19 @@ g8 = g8.reshape(height, width)
 b8 = b8.reshape(height, width)
 
 # ── 8. Verification (your original loop style preserved) ──────────────────────
+
+# ── Diagnostic quadrant check ─────────────────────────────────────────────────
+W =  320
+H =  240
+cx, cy = W // 2, H // 2
+samples = {
+    "TOP-LEFT  (expect R)": (r8[cy//2,  cx//2 ], g8[cy//2,  cx//2 ], b8[cy//2,  cx//2 ]),
+    "TOP-RIGHT (expect G)": (r8[cy//2,  cx+cx//2], g8[cy//2,  cx+cx//2], b8[cy//2,  cx+cx//2]),
+    "BOT-LEFT  (expect B)": (r8[cy+cy//2, cx//2 ], g8[cy+cy//2, cx//2 ], b8[cy+cy//2, cx//2 ]),
+    "BOT-RIGHT (expect W)": (r8[cy+cy//2, cx+cx//2], g8[cy+cy//2, cx+cx//2], b8[cy+cy//2, cx+cx//2]),
+}
+for label, (r, g, b) in samples.items():
+    print(f"  {label}  →  R={r:3d}  G={g:3d}  B={b:3d}")
 # ── 8. Sanity check (not pixel-exact — real JPEG has unknown values) ──────────
 print(f"\n[7] Checking image sanity...")
 
