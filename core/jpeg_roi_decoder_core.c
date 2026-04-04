@@ -136,7 +136,7 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
 
     
     if (rect->left == 304 && rect->top == 48) {
-    ESP_LOGI("MCU", "last MCU of band 3 — "
+    ESP_LOGD("MCU", "last MCU of band 3 — "
              "chunk_buf[12*320]=%u chunk_buf[12*320+160]=%u",
              ctx->chunk_buffer[12 * ctx->roi_width],
              ctx->chunk_buffer[12 * ctx->roi_width + 160]);
@@ -175,7 +175,7 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
             /* targeted log around the known failure boundary */
             uint16_t slot = roi_y % JPEG_MCU_MAX_HEIGHT;
             if (roi_y >= 55 && roi_y <= 65) {
-                ESP_LOGI("FLUSH", "roi_y=%u slot=%u fill=%u "
+                ESP_LOGD("FLUSH", "roi_y=%u slot=%u fill=%u "
                 "buf[slot*w+0]=%u buf[slot*w+160]=%u buf[slot*w+319]=%u",
                  roi_y, slot, ctx->row_fill_count[roi_y],
                  ctx->chunk_buffer[slot * ctx->roi_width + 0],
