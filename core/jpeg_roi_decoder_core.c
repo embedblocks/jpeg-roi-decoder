@@ -368,8 +368,8 @@ jpeg_decoder_prepare_view_request(
     int32_t max_y = (int32_t)scaled_img_h - lcd_h;
     if (cx < 0)                   cx = 0;
     if (cy < 0)                   cy = 0;
-    if (max_x > 0 && cx > max_x)  cx = max_x;
-    if (max_y > 0 && cy > max_y)  cy = max_y;
+    if (max_x >= 0 && cx > max_x) cx = max_x;  // ← >= catches the equal case
+    if (max_y >= 0 && cy > max_y) cy = max_y;
 
     jpeg_roi_t roi = {
         .left   = (uint16_t)( cx              * div),
