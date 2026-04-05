@@ -1,0 +1,3 @@
+#for test app
+CONFIG_ESP_TASK_WDT_EN=n
+CONFIG_ESP_TASK_WDT_INIT=n

@@ -1,5 +1,11 @@
 .vscode/
 build/
+build-*/
+dist/
 .github/
 managed_components/
 sdkconfig
+*.png
+*.raw
+graveyard/
+dependencies.lock
