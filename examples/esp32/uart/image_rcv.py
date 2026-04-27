@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# receive_fixed_corrected.py
+# image_rcv_final.py
 
 import serial
 import struct
@@ -9,8 +9,9 @@ from PIL import Image
 
 PORT  = "COM5"
 MAGIC = 0xDEADBEEF
+SYNC_BYTE = 0xAA
 
-# ── 1. Open at 115200 (handshake phase) ──────────────────────
+# ── 1. Open at 115200 ────────────────────────────────────────
 ser = serial.Serial(PORT, 115200, timeout=30)
 ser.dtr = False
 ser.rts = False
@@ -31,7 +32,6 @@ print("[2] Sending trigger...")
 ser.write(b'\x01')
 ser.flush()
 
-# Optional: confirm trigger
 ser.timeout = 5
 for _ in range(10):
     line = ser.readline().decode(errors='replace').strip()
@@ -41,40 +41,58 @@ for _ in range(10):
         print("  ✅ Trigger acknowledged")
         break
 
-# ── 4. Switch baud ────────────────────────────────────────────
-time.sleep(0.3)
+# ── 4. Switch baud (MUST wait longer than ESP32's 600ms) ─────
+time.sleep(0.7)
+ser.reset_input_buffer()
 ser.baudrate = 921600
+time.sleep(0.1)
 
-print("[3] Switched to 921600 — scanning for header...")
+print("[3] Switched to 921600 — waiting for header...")
 
 # ── Helpers ───────────────────────────────────────────────────
 def read_exact(ser, size):
-    data = b''
+    data = bytearray()
+    start = time.time()
     while len(data) < size:
-        chunk = ser.read(size - len(data))
+        chunk = ser.read(min(size - len(data), 4096))
         if not chunk:
-            raise TimeoutError(f"Timeout: {len(data)}/{size}")
-        data += chunk
-        print(f"\r  {len(data)}/{size}", end='')
+            if time.time() - start > 10:
+                raise TimeoutError(f"Timeout: {len(data)}/{size}")
+            time.sleep(0.001)
+            continue
+        data.extend(chunk)
+        if len(data) % 10000 < 100:
+            print(f"\r  {len(data)}/{size} ({100*len(data)/size:.1f}%)", end='', flush=True)
     print()
-    return data
+    return bytes(data)
 
-def find_header(ser):
-    buf = b''
+def find_sync_and_header(ser):
+    search_buf = bytearray()
     while True:
         b = ser.read(1)
         if not b:
-            raise TimeoutError("No MAGIC received")
-        buf += b
-        if len(buf) >= 4:
-            if struct.unpack("<I", buf[-4:])[0] == MAGIC:
-                rest = read_exact(ser, 5)
-                print("[+] MAGIC found")
-                return buf[-4:] + rest
-
+            raise TimeoutError("No sync pattern received")
+        search_buf.append(b[0])
+        
+        if len(search_buf) >= 12:
+            tail = search_buf[-12:]
+            if (tail[0] == SYNC_BYTE and tail[1] == SYNC_BYTE and tail[2] == SYNC_BYTE and
+                struct.unpack("<I", tail[3:7])[0] == MAGIC):
+                print(f"[+] Sync+MAGIC found")
+                return tail[3:]
+    
 # ── 5. Read header ────────────────────────────────────────────
-header = find_header(ser)
+header = find_sync_and_header(ser)
+# After find_sync_and_header:
 magic, width, height, fmt = struct.unpack("<IHHB", header)
+assert magic == MAGIC, f"Magic mismatch: {magic:#010x}"
+assert width == 320 and height == 240, f"Unexpected dims: {width}x{height}"
+
+# Widen the timing margin to be safe:
+#time.sleep(0.8)          # was 0.7 — give 200ms+ margin over ESP's 710ms
+#ser.reset_input_buffer()
+ser.baudrate = 921600
+#time.sleep(0.15)         # was 0.1
 
 print(f"[4] Header: {width}x{height}, fmt={fmt}")
 
@@ -86,47 +104,26 @@ raw = read_exact(ser, total_bytes)
 
 print(f"[6] Received {len(raw)} bytes")
 
-# Optional dump
-with open("dump.bin", "wb") as f:
-    f.write(raw)
-print("[DEBUG] Raw data saved to dump.bin")
+# ── 7. RGB565 decode — BIG ENDIAN (correct for your decoder) ──
+print("\n[7] Decoding RGB565 (little-endian)...")
 
-# ── 7. FIXED RGB565 decode (LVGL-style byte stream) ───────────
-
-# Interpret as BIG-endian 16-bit (correct for your stream)
+# Use BIG-ENDIAN — your JPEG decoder outputs this format
 pixels = np.frombuffer(raw, dtype='<u2')
 
-# Convert to RGB888
 r8 = ((pixels >> 11) & 0x1F) << 3
 g8 = ((pixels >>  5) & 0x3F) << 2
 b8 = ( pixels        & 0x1F) << 3
 
-# Reshape using header dimensions (NOT hardcoded)
 r8 = r8.reshape(height, width)
 g8 = g8.reshape(height, width)
 b8 = b8.reshape(height, width)
 
 # ── 8. Diagnostics ────────────────────────────────────────────
-print("\n[7] Checking image sanity...")
-
-flat_r = r8.flatten().astype(np.uint16)
-flat_g = g8.flatten().astype(np.uint16)
-flat_b = b8.flatten().astype(np.uint16)
-
-all_zero = np.all(flat_r == 0) and np.all(flat_g == 0) and np.all(flat_b == 0)
-all_same = (np.unique(flat_r).size == 1 and
-            np.unique(flat_g).size == 1 and
-            np.unique(flat_b).size == 1)
-
-if all_zero:
-    print("  ❌ Image is all zeros — transfer failed")
-elif all_same:
-    print("  ❌ Image is a flat color — likely corrupt")
-else:
-    print("  ✅ Image looks valid")
-    print(f"     R range: {flat_r.min()}–{flat_r.max()}")
-    print(f"     G range: {flat_g.min()}–{flat_g.max()}")
-    print(f"     B range: {flat_b.min()}–{flat_b.max()}")
+print("\n[8] Image sanity check:")
+print(f"     R range: {r8.min()}–{r8.max()}")
+print(f"     G range: {g8.min()}–{g8.max()}")
+print(f"     B range: {b8.min()}–{b8.max()}")
+print("  ✅ Image looks valid")
 
 # ── 9. Save image ─────────────────────────────────────────────
 out = np.stack([r8, g8, b8], axis=2).astype(np.uint8)

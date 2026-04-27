@@ -366,17 +366,26 @@ jpeg_decoder_prepare_view_request(
     int32_t cy = ((int32_t)scaled_img_h - lcd_h) / 2 + view->pan_y;
     int32_t max_x = (int32_t)scaled_img_w - lcd_w;
     int32_t max_y = (int32_t)scaled_img_h - lcd_h;
-    if (cx < 0)                   cx = 0;
-    if (cy < 0)                   cy = 0;
-    if (max_x >= 0 && cx > max_x) cx = max_x;  // ← >= catches the equal case
-    if (max_y >= 0 && cy > max_y) cy = max_y;
+    ESP_LOGI("JPEG_PAN", "pre-clamp:  cx=%ld cy=%ld  max_x=%ld max_y=%ld",
+            cx, cy, max_x, max_y);
 
+    if (cx < 0)                    cx = 0;
+    if (cy < 0)                    cy = 0;
+    if (max_x >= 0 && cx > max_x)  cx = max_x;
+    if (max_y >= 0 && cy > max_y)  cy = max_y;
+
+    
     jpeg_roi_t roi = {
         .left   = (uint16_t)( cx              * div),
         .top    = (uint16_t)( cy              * div),
         .right  = (uint16_t)((cx + lcd_w - 1) * div),
         .bottom = (uint16_t)((cy + lcd_h - 1) * div),
     };
+    ESP_LOGI("JPEG_PAN", "post-clamp: cx=%ld cy=%ld",  cx, cy);
+    ESP_LOGI("JPEG_PAN", "ROI: left=%u top=%u right=%u bottom=%u",
+            roi.left, roi.top, roi.right, roi.bottom);   
+            
+    
 
     /* Step 4: fill request — no malloc, chunk_buffer from caller */
     *req_out = (jpeg_decode_request_t){
