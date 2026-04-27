@@ -1,5 +1,5 @@
 
-version: "0.1.0"
+version: "0.2.0"
 description: >
   Region-of-interest JPEG decoder for ESP32. Decodes any rectangular
   sub-region of a JPEG without loading the full image, streaming output

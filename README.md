@@ -38,14 +38,14 @@ Built on [TJpgDec](http://elm-chan.org/fsw/tjpgd/) with an LCD-aware API that ha
 ## Using ESP-IDF Component Manager (Recommended)
 
 ```bash
-idf.py add-dependency "jpeg_roi_decoder^0.1.0"
+idf.py add-dependency "jpeg_roi_decoder^0.2.0"
 ```
 
 Or in your project's `idf_component.yml`:
 
 ```yaml
 dependencies:
-  jpeg_roi_decoder: "^0.1.0"
+  jpeg_roi_decoder: "^0.2.0"
 ```
 
 Then configure via:
