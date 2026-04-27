@@ -73,7 +73,7 @@ void app_main(void)
     sd_mount_init();
     jpeg_decoder_init();
 
-    FILE* fin = fopen("/sdcard/flower.jpg", "rb");
+    FILE* fin = fopen("/sdcard/testimg.jpg", "rb");
 
     if (!fin) {
         ESP_LOGE("APP", "Failed to open input image");
@@ -93,7 +93,10 @@ void app_main(void)
     jpeg_view_t view  = jpeg_view_default(LCD_W, LCD_H);
     view.out_format   = JPEG_OUTPUT_RGB565;
     view.chunk_buffer = chunk_buf;   /* provide buffer — no malloc inside */
-    
+    view.pan_x       = -100;           /* top-left corner of the image */
+    view.pan_y       = -150;
+    view.scale= JPEG_SCALE_AUTO;
+
     
     //- 6. Decode — rows stream via on_chunk() --- 
     jpeg_decoder_decode_view(
