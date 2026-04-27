@@ -105,7 +105,7 @@ raw = read_exact(ser, total_bytes)
 print(f"[6] Received {len(raw)} bytes")
 
 # ── 7. RGB565 decode — BIG ENDIAN (correct for your decoder) ──
-print("\n[7] Decoding RGB565 (big-endian)...")
+print("\n[7] Decoding RGB565 (little-endian)...")
 
 # Use BIG-ENDIAN — your JPEG decoder outputs this format
 pixels = np.frombuffer(raw, dtype='<u2')
