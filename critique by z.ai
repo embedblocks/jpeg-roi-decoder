@@ -66,3 +66,15 @@ Recommendation: Add a small note under "RTOS Layer: Worker Task Owns Full Lifecy
     Caution: Do not queue multiple jobs sharing the same mutable reader.ctx (e.g., a buffer context with a pos index) unless the done_callback of the first job resets the context state back to its initial position. The worker task processes jobs serially but does not manipulate or reset reader.ctx between them. 
      
 
+
+     critique by chatgpt
+
+     The RTOS chunk_callback blocking issue.
+This is the single most valuable insight in their entire critique, and I did not call it out. 
+If your on_chunk function writes to a slow UART, and the UART TX buffer fills up, on_chunk blocks. Because on_chunk is called inside the worker task, the entire JPEG decoder stalls.  
+
+     My take: I completely missed this pipeline stall. 
+     Their recommendation: Document that chunk_callback must be bounded-time, or provide a queue adapter.
+     What you should do: Add a strict comment in the header: "chunk_callback runs in the decoder's worker context. It must not block indefinitely (e.g., waiting on a full UART/DMA buffer) or it will stall the decode pipeline."
+     
+
