@@ -1,0 +1,15 @@
+Ok after all this design
+i here specify my updated requirement
+
+the read for the decoder must be an abstract callback and it must be provided by main
+
+if should have  a signature like
+
+decoder_read_callback(some_suitable_type *buffer, buffer_max_size,  void* context)
+and this buffer is the one supplied to it on decode call through config struct
+
+and the context any info related to the src of the image
+
+and this context is defined by the user. for file read it could be the file pointer
+for buffer read it could be the buffer pointer and current index to read from etc
+for streaming it could be the req
