@@ -282,6 +282,12 @@ typedef struct {
 `jpeg_view_default()` returns `jpeg_view_intent_t` with `reader = {NULL, NULL}` and
 `chunk_buffer = NULL`. Caller must fill all pointer fields before decoding.
 
+> **Note:** `work_buffer` is intentionally excluded from `jpeg_view_intent_t`. The intent
+> struct describes viewing parameters (what to decode and how to present it). The work
+> buffer is an execution resource consumed by the decoder internally. Keeping them separate
+> prevents the intent struct from becoming a dumping ground for runtime allocations.
+> Implementors must not move `work_buffer` into `jpeg_view_intent_t`.
+
 ### Low-Level: `jpeg_decode_request_t` (updated)
 
 ```c
@@ -480,11 +486,34 @@ typedef struct {
 Probe errors (corrupt headers, truncated stream) no longer surface synchronously.
 They arrive via `done_callback` with `result = JPEG_DECODE_ERR_INPUT`.
 
+> **Caution: shared mutable `reader.ctx`.** Do not queue multiple jobs that share the
+> same mutable context (e.g., a `buf_ctx_t` with a `pos` index) unless the
+> `done_callback` of the first job resets the context state to its initial position.
+> The worker task processes jobs serially but never manipulates or resets `reader.ctx`
+> between them. A second job enqueued with a context left at EOF by the first job will
+> fail immediately with `JPEG_DECODE_ERR_INPUT`.
+
 ---
 
 ## Buffer Lifetime Contracts
 
-### Work buffer
+### Chunk callback (`chunk_callback`) — must be bounded-time
+
+`chunk_callback` is invoked directly from inside the decoder's worker task on every
+completed row. If the callback blocks — waiting on a full UART TX buffer, a stalled
+DMA transfer, a slow SPI display, or any other back-pressure — the entire decode
+pipeline stalls for the same duration. On a slow or congested output path this can
+cause the JPEG source to time out (if the source has a timeout) or produce visible
+tearing on a display.
+
+**Contract:** `chunk_callback` must return within a bounded, predictable time. It must
+never wait indefinitely on an external resource.
+
+If the output path is inherently slow or bursty, the recommended pattern is a
+queue adapter: the callback enqueues the pixel row into a FreeRTOS queue and returns
+immediately. A separate task drains the queue and drives the slow peripheral. This
+decouples decode throughput from output throughput and keeps the decoder pipeline
+unblocked.
 - Caller allocates (minimum `JPEG_DECODER_WORK_BUF_MIN` bytes).
 - Must remain valid and unmodified until `done_callback` fires.
 - Declaring as a static array is the simplest correct choice for most embedded use cases.
