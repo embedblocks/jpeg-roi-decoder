@@ -32,4 +32,4 @@ files:
       - "README.txt"
       - "*.png"
       - "*.bin"
-      - "*.md"
+      - "jpeg_streaming_decoder_design.md"
