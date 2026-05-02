@@ -134,7 +134,7 @@ jpeg_decoder_decode_view(
         return JPEG_DECODE_ERR_PARAM;
     }
 
-    if (!intent || !intent->reader.cb || !intent->chunk_buffer) {
+    if (!intent || !intent->reader.cb || !intent->chunk_buffer || !work_buffer) {
         if (done_callback) {
             jpeg_done_event_t evt = { .result    = JPEG_DECODE_ERR_PARAM,
                                       .user_data = user_data };
