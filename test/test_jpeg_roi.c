@@ -55,6 +55,29 @@ static uint8_t  s_workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
 static uint16_t s_chunk_buf[JPEG_CHUNK_BUF_PIXELS(320)];
 
 /* ------------------------------------------------------------------ */
+/*  Buffer source — caller-implemented read callback
+ *
+ *  dst == NULL means skip: advance pos without copying to RAM.
+ * ------------------------------------------------------------------ */
+
+typedef struct {
+    const uint8_t *data;
+    size_t         len;
+    size_t         pos;
+} buf_ctx_t;
+
+static size_t buf_read_cb(uint8_t *dst, size_t max, void *vctx)
+{
+    buf_ctx_t *bc = vctx;
+    size_t avail  = bc->len - bc->pos;
+    size_t n      = max < avail ? max : avail;
+    if (dst)
+        memcpy(dst, bc->data + bc->pos, n);
+    bc->pos += n;
+    return n;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Sync wrapper
  *
  *  All tests call sync_decode_view() / sync_decode() instead of the
@@ -62,7 +85,7 @@ static uint16_t s_chunk_buf[JPEG_CHUNK_BUF_PIXELS(320)];
  *  actual result from the done event.
  * ------------------------------------------------------------------ */
 
-static SemaphoreHandle_t s_done_sem;
+static SemaphoreHandle_t    s_done_sem;
 static jpeg_decode_result_t s_done_result;
 
 static void sync_done_cb(const jpeg_done_event_t *evt)
@@ -74,23 +97,19 @@ static void sync_done_cb(const jpeg_done_event_t *evt)
 #define DECODE_TIMEOUT_MS  5000
 
 static jpeg_decode_result_t sync_decode_view(
-    jpeg_source_t       source,
-    jpeg_view_t        *view,
+    jpeg_view_intent_t *intent,   /* reader already set by caller */
     jpeg_chunk_cb_t     chunk_cb,
     void               *user_data)
 {
     s_done_result = JPEG_DECODE_ERR_INTR;
 
     jpeg_decode_result_t queue_res = jpeg_decoder_decode_view(
-        source, view,
+        intent,
         s_workbuf, sizeof(s_workbuf),
         chunk_cb, sync_done_cb, user_data);
 
-    /* On sync platforms core_run has already fired done_callback and the
-     * semaphore is already given before we reach this line. On FreeRTOS
-     * we block here until the worker task fires done_callback.           */
     if (queue_res != JPEG_DECODE_OK)
-        return queue_res;   /* queuing itself failed */
+        return queue_res;
 
     xSemaphoreTake(s_done_sem, pdMS_TO_TICKS(DECODE_TIMEOUT_MS));
     return s_done_result;
@@ -98,10 +117,9 @@ static jpeg_decode_result_t sync_decode_view(
 
 static jpeg_decode_result_t sync_decode(jpeg_decode_request_t *req)
 {
-    /* Override done_callback with our sync wrapper */
-    void *orig_user_data  = req->user_data;
-    req->done_callback    = sync_done_cb;
-    s_done_result         = JPEG_DECODE_ERR_INTR;
+    void *orig_user_data = req->user_data;
+    req->done_callback   = sync_done_cb;
+    s_done_result        = JPEG_DECODE_ERR_INTR;
 
     jpeg_decode_result_t queue_res = jpeg_decoder_decode(req);
 
@@ -133,50 +151,55 @@ void tearDown(void)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Source helpers — each call returns a fresh independent source     */
-/* ------------------------------------------------------------------ */
+/*  Reader helpers — each call returns a fresh independent reader
+ *
+ *  Each make_reader_*() initializes a dedicated static buf_ctx_t.
+ *  Tests that need two simultaneous independent readers call
+ *  make_reader_320x240_a() and make_reader_320x240_b() separately.
+ * ------------------------------------------------------------------ */
 
-/*
- * Each make_src_*() call initializes a dedicated static — never shared
- * between two concurrent decodes. Tests that need two simultaneous
- * independent sources call make_src_a() and make_src_b() separately.
- */
-
-static jpeg_source_t make_src_320x240(void)
+static jpeg_reader_t make_reader_320x240(void)
 {
-    static jpeg_source_t src;
-    jpeg_decoder_source_from_buffer(&src,
-        test_320x240_jpg_start,
-        test_320x240_jpg_end - test_320x240_jpg_start);
-    return src;
+    static buf_ctx_t ctx;
+    ctx = (buf_ctx_t){
+        .data = test_320x240_jpg_start,
+        .len  = test_320x240_jpg_end - test_320x240_jpg_start,
+        .pos  = 0,
+    };
+    return (jpeg_reader_t){ .cb = buf_read_cb, .ctx = &ctx };
 }
 
-static jpeg_source_t make_src_320x240_b(void)
+static jpeg_reader_t make_reader_320x240_b(void)
 {
-    /* Separate static for the second decode in multi-decode tests */
-    static jpeg_source_t src;
-    jpeg_decoder_source_from_buffer(&src,
-        test_320x240_jpg_start,
-        test_320x240_jpg_end - test_320x240_jpg_start);
-    return src;
+    static buf_ctx_t ctx;
+    ctx = (buf_ctx_t){
+        .data = test_320x240_jpg_start,
+        .len  = test_320x240_jpg_end - test_320x240_jpg_start,
+        .pos  = 0,
+    };
+    return (jpeg_reader_t){ .cb = buf_read_cb, .ctx = &ctx };
 }
 
-static jpeg_source_t make_src_320x240_c(void)
+static jpeg_reader_t make_reader_320x240_c(void)
 {
-    static jpeg_source_t src;
-    jpeg_decoder_source_from_buffer(&src,
-        test_320x240_jpg_start,
-        test_320x240_jpg_end - test_320x240_jpg_start);
-    return src;
+    static buf_ctx_t ctx;
+    ctx = (buf_ctx_t){
+        .data = test_320x240_jpg_start,
+        .len  = test_320x240_jpg_end - test_320x240_jpg_start,
+        .pos  = 0,
+    };
+    return (jpeg_reader_t){ .cb = buf_read_cb, .ctx = &ctx };
 }
 
-static jpeg_source_t make_src_16x16(void)
+static jpeg_reader_t make_reader_16x16(void)
 {
-    static jpeg_source_t src;
-    jpeg_decoder_source_from_buffer(&src,
-        test_16x16_jpg_start,
-        test_16x16_jpg_end - test_16x16_jpg_start);
-    return src;
+    static buf_ctx_t ctx;
+    ctx = (buf_ctx_t){
+        .data = test_16x16_jpg_start,
+        .len  = test_16x16_jpg_end - test_16x16_jpg_start,
+        .pos  = 0,
+    };
+    return (jpeg_reader_t){ .cb = buf_read_cb, .ctx = &ctx };
 }
 
 /* ------------------------------------------------------------------ */
@@ -297,11 +320,11 @@ TEST_CASE("decode_view: delivers exactly 240 rows in y-order",
 {
     reset_capture(320);
 
-    jpeg_view_t view  = jpeg_view_default(320, 240);
+    jpeg_view_intent_t view = jpeg_view_default(320, 240);
+    view.reader       = make_reader_320x240();
     view.chunk_buffer = s_chunk_buf;
 
-    jpeg_decode_result_t res = sync_decode_view(
-        make_src_320x240(), &view, capture_cb, &s_cap);
+    jpeg_decode_result_t res = sync_decode_view(&view, capture_cb, &s_cap);
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_OK, res);
     TEST_ASSERT_EQUAL(240, s_cap.rows_received);
@@ -317,10 +340,12 @@ TEST_CASE("ROI: centered decode — top-left pixel encodes (0,0)",
           "[jpeg][roi][pixels]")
 {
     reset_capture(320);
-    jpeg_view_t view  = jpeg_view_default(320, 240);
+
+    jpeg_view_intent_t view = jpeg_view_default(320, 240);
+    view.reader       = make_reader_320x240();
     view.chunk_buffer = s_chunk_buf;
 
-    sync_decode_view(make_src_320x240(), &view, capture_cb, &s_cap);
+    sync_decode_view(&view, capture_cb, &s_cap);
 
     uint8_t r, g;
     rgb565_decode(s_cap.first_row[0], &r, &g);
@@ -332,10 +357,12 @@ TEST_CASE("ROI: centered decode — bottom-right pixel encodes (319,239)",
           "[jpeg][roi][pixels]")
 {
     reset_capture(320);
-    jpeg_view_t view  = jpeg_view_default(320, 240);
+
+    jpeg_view_intent_t view = jpeg_view_default(320, 240);
+    view.reader       = make_reader_320x240();
     view.chunk_buffer = s_chunk_buf;
 
-    sync_decode_view(make_src_320x240(), &view, capture_cb, &s_cap);
+    sync_decode_view(&view, capture_cb, &s_cap);
 
     uint8_t r, g;
     rgb565_decode(s_cap.last_row[319], &r, &g);
@@ -346,20 +373,33 @@ TEST_CASE("ROI: centered decode — bottom-right pixel encodes (319,239)",
 TEST_CASE("ROI: pan_x shifts decoded region — left edge R increases",
           "[jpeg][roi][pan]")
 {
-    /* Decode 1: centered — uses make_src_320x240() */
-    reset_capture(320);
-    jpeg_view_t view  = jpeg_view_default(320, 240);
-    view.chunk_buffer = s_chunk_buf;
-    sync_decode_view(make_src_320x240(), &view, capture_cb, &s_cap);
+    /*
+     * Use a 160x120 LCD viewport at JPEG_SCALE_1_1 against the 320x240 image.
+     * max_cx = 320-160 = 160 — plenty of room to pan.
+     * Centered: cx = (320-160)/2 = 80  → expected_r(80) ≈ 63
+     * Panned:   cx = 80+50      = 130  → expected_r(130) ≈ 103
+     * Difference is well above POSITION_TOLERANCE.
+     */
+    static uint16_t pan_chunk[JPEG_CHUNK_BUF_PIXELS(160)];
+
+    /* Decode 1: centered */
+    reset_capture(160);
+    jpeg_view_intent_t view = jpeg_view_default(160, 120);
+    view.reader       = make_reader_320x240();
+    view.chunk_buffer = pan_chunk;
+    view.scale        = JPEG_SCALE_1_1;
+    sync_decode_view(&view, capture_cb, &s_cap);
     uint8_t r_center, g_center;
     rgb565_decode(s_cap.first_row[0], &r_center, &g_center);
 
-    /* Decode 2: panned — uses separate make_src_320x240_b() */
-    reset_capture(320);
-    view              = jpeg_view_default(320, 240);
-    view.chunk_buffer = s_chunk_buf;
+    /* Decode 2: panned right — separate reader with its own fresh ctx */
+    reset_capture(160);
+    view              = jpeg_view_default(160, 120);
+    view.reader       = make_reader_320x240_b();
+    view.chunk_buffer = pan_chunk;
+    view.scale        = JPEG_SCALE_1_1;
     view.pan_x        = 50;
-    sync_decode_view(make_src_320x240_b(), &view, capture_cb, &s_cap);
+    sync_decode_view(&view, capture_cb, &s_cap);
     uint8_t r_pan, g_pan;
     rgb565_decode(s_cap.first_row[0], &r_pan, &g_pan);
 
@@ -369,51 +409,69 @@ TEST_CASE("ROI: pan_x shifts decoded region — left edge R increases",
 TEST_CASE("ROI: pan_y shifts decoded region — top edge G increases",
           "[jpeg][roi][pan]")
 {
-    reset_capture(320);
-    jpeg_view_t view  = jpeg_view_default(320, 240);
-    view.chunk_buffer = s_chunk_buf;
-    sync_decode_view(make_src_320x240(), &view, capture_cb, &s_cap);
+    /*
+     * Same reasoning as pan_x: 160x120 LCD at JPEG_SCALE_1_1.
+     * max_cy = 240-120 = 120.
+     * Centered: cy = (240-120)/2 = 60  → expected_g(60) ≈ 63
+     * Panned:   cy = 60+50      = 110  → expected_g(110) ≈ 117
+     */
+    static uint16_t pan_chunk[JPEG_CHUNK_BUF_PIXELS(160)];
+
+    /* Decode 1: centered */
+    reset_capture(160);
+    jpeg_view_intent_t view = jpeg_view_default(160, 120);
+    view.reader       = make_reader_320x240();
+    view.chunk_buffer = pan_chunk;
+    view.scale        = JPEG_SCALE_1_1;
+    sync_decode_view(&view, capture_cb, &s_cap);
     uint8_t r_center, g_center;
     rgb565_decode(s_cap.first_row[0], &r_center, &g_center);
 
-    reset_capture(320);
-    view              = jpeg_view_default(320, 240);
-    view.chunk_buffer = s_chunk_buf;
+    /* Decode 2: panned down */
+    reset_capture(160);
+    view              = jpeg_view_default(160, 120);
+    view.reader       = make_reader_320x240_b();
+    view.chunk_buffer = pan_chunk;
+    view.scale        = JPEG_SCALE_1_1;
     view.pan_y        = 50;
-    sync_decode_view(make_src_320x240_b(), &view, capture_cb, &s_cap);
+    sync_decode_view(&view, capture_cb, &s_cap);
     uint8_t r_pan, g_pan;
     rgb565_decode(s_cap.first_row[0], &r_pan, &g_pan);
 
     TEST_ASSERT_GREATER_THAN(g_center + POSITION_TOLERANCE, g_pan);
 }
 
-TEST_CASE("ROI: extreme positive pan clamped — decode succeeds, 240 rows",
+TEST_CASE("ROI: extreme positive pan clamped — decode succeeds, 120 rows",
           "[jpeg][roi][pan]")
 {
-    reset_capture(320);
-    jpeg_view_t view  = jpeg_view_default(160, 120);
-    view.chunk_buffer = s_chunk_buf;
+    static uint16_t small_chunk[JPEG_CHUNK_BUF_PIXELS(160)];
+    reset_capture(160);
+
+    jpeg_view_intent_t view = jpeg_view_default(160, 120);
+    view.reader       = make_reader_320x240();
+    view.chunk_buffer = small_chunk;
     view.pan_x        = 99999;
     view.pan_y        = 99999;
 
-    jpeg_decode_result_t res = sync_decode_view(
-        make_src_320x240(), &view, capture_cb, &s_cap);
+    jpeg_decode_result_t res = sync_decode_view(&view, capture_cb, &s_cap);
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_OK, res);
-    TEST_ASSERT_EQUAL(240, s_cap.rows_received);
+    TEST_ASSERT_EQUAL(120, s_cap.rows_received);
 }
 
 TEST_CASE("ROI: extreme negative pan clamped — top-left encodes origin",
           "[jpeg][roi][pan]")
 {
-    reset_capture(320);
-    jpeg_view_t view  = jpeg_view_default(160, 120);
-    view.chunk_buffer = s_chunk_buf;
+    static uint16_t small_chunk[JPEG_CHUNK_BUF_PIXELS(160)];
+    reset_capture(160);
+
+    jpeg_view_intent_t view = jpeg_view_default(160, 120);
+    view.reader       = make_reader_320x240();
+    view.chunk_buffer = small_chunk;
     view.pan_x        = -99999;
     view.pan_y        = -99999;
 
-    jpeg_decode_result_t res = sync_decode_view(
-        make_src_320x240(), &view, capture_cb, &s_cap);
+    jpeg_decode_result_t res = sync_decode_view(&view, capture_cb, &s_cap);
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_OK, res);
 
@@ -433,12 +491,12 @@ TEST_CASE("ROI: 160x120 viewport from 320x240 — exactly 120 rows of 160px",
     static uint16_t small_chunk[JPEG_CHUNK_BUF_PIXELS(160)];
     reset_capture(160);
 
-    jpeg_view_t view  = jpeg_view_default(160, 120);
+    jpeg_view_intent_t view = jpeg_view_default(160, 120);
+    view.reader       = make_reader_320x240();
     view.chunk_buffer = small_chunk;
     view.scale        = JPEG_SCALE_1_1;
 
-    jpeg_decode_result_t res = sync_decode_view(
-        make_src_320x240(), &view, capture_cb, &s_cap);
+    jpeg_decode_result_t res = sync_decode_view(&view, capture_cb, &s_cap);
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_OK, res);
     TEST_ASSERT_EQUAL(120, s_cap.rows_received);
@@ -457,7 +515,7 @@ TEST_CASE("ROI low-level: top-left 16x16 corner encodes (0,0)",
     row0_ctx_t ctx = { .dst = captured_row, .dst_w = 16 };
 
     jpeg_decode_request_t req = {
-        .source              = make_src_320x240(),
+        .reader              = make_reader_320x240(),
         .roi                 = { .left=0, .top=0, .right=15, .bottom=15 },
         .scale               = JPEG_SCALE_1_1,
         .out_format          = JPEG_OUTPUT_RGB565,
@@ -488,7 +546,7 @@ TEST_CASE("ROI low-level: center region (152,112) encodes center coordinates",
     row0_ctx_t ctx = { .dst = captured_row, .dst_w = 16 };
 
     jpeg_decode_request_t req = {
-        .source              = make_src_320x240(),
+        .reader              = make_reader_320x240(),
         .roi                 = { .left=cx, .top=cy,
                                  .right=(uint16_t)(cx+15),
                                  .bottom=(uint16_t)(cy+15) },
@@ -531,11 +589,11 @@ TEST_CASE("ROI low-level: top-left and bottom-right corners give different pixel
         .chunk_callback      = first_pixel_cb,
     };
 
-    req.source    = make_src_320x240();
+    req.reader    = make_reader_320x240();
     req.user_data = &ctx_a;
     sync_decode(&req);
 
-    req.source               = make_src_320x240_b();
+    req.reader               = make_reader_320x240_b();
     req.roi                  = (jpeg_roi_t){ 304, 224, 319, 239 };
     req.chunk_buffer         = roi_chunk_b;
     req.user_data            = &ctx_b;
@@ -553,22 +611,34 @@ TEST_CASE("ROI low-level: top-left and bottom-right corners give different pixel
 TEST_CASE("error: decode_view fails when chunk_buffer is NULL",
           "[jpeg][error]")
 {
-    jpeg_view_t view = jpeg_view_default(320, 240);
-    /* chunk_buffer left NULL */
+    jpeg_view_intent_t view = jpeg_view_default(320, 240);
+    view.reader = make_reader_320x240();
+    /* chunk_buffer intentionally left NULL */
 
     jpeg_decode_result_t res = jpeg_decoder_decode_view(
-        make_src_320x240(), &view,
-        s_workbuf, sizeof(s_workbuf), NULL, NULL, NULL);
+        &view, s_workbuf, sizeof(s_workbuf), NULL, NULL, NULL);
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_ERR_PARAM, res);
 }
 
-TEST_CASE("error: decode_view fails when view is NULL",
+TEST_CASE("error: decode_view fails when intent is NULL",
           "[jpeg][error]")
 {
     jpeg_decode_result_t res = jpeg_decoder_decode_view(
-        make_src_320x240(), NULL,
-        s_workbuf, sizeof(s_workbuf), NULL, NULL, NULL);
+        NULL, s_workbuf, sizeof(s_workbuf), NULL, NULL, NULL);
+
+    TEST_ASSERT_EQUAL(JPEG_DECODE_ERR_PARAM, res);
+}
+
+TEST_CASE("error: decode_view fails when reader.cb is NULL",
+          "[jpeg][error]")
+{
+    jpeg_view_intent_t view = jpeg_view_default(320, 240);
+    view.chunk_buffer = s_chunk_buf;
+    /* reader.cb intentionally left NULL */
+
+    jpeg_decode_result_t res = jpeg_decoder_decode_view(
+        &view, s_workbuf, sizeof(s_workbuf), NULL, NULL, NULL);
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_ERR_PARAM, res);
 }
@@ -576,11 +646,12 @@ TEST_CASE("error: decode_view fails when view is NULL",
 TEST_CASE("error: decode_view fails when work_buffer is NULL",
           "[jpeg][error]")
 {
-    jpeg_view_t view  = jpeg_view_default(320, 240);
+    jpeg_view_intent_t view = jpeg_view_default(320, 240);
+    view.reader       = make_reader_320x240();
     view.chunk_buffer = s_chunk_buf;
 
     jpeg_decode_result_t res = jpeg_decoder_decode_view(
-        make_src_320x240(), &view, NULL, 0, NULL, NULL, NULL);
+        &view, NULL, 0, NULL, NULL, NULL);
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_ERR_PARAM, res);
 }
@@ -591,7 +662,7 @@ TEST_CASE("error: JPEG_SCALE_AUTO rejected by low-level API",
     static uint16_t buf[JPEG_CHUNK_BUF_PIXELS(16)];
 
     jpeg_decode_request_t req = {
-        .source              = make_src_16x16(),
+        .reader              = make_reader_16x16(),
         .roi                 = { 0, 0, 15, 15 },
         .scale               = JPEG_SCALE_AUTO,
         .out_format          = JPEG_OUTPUT_RGB565,
@@ -602,7 +673,6 @@ TEST_CASE("error: JPEG_SCALE_AUTO rejected by low-level API",
         .chunk_callback      = NULL,
     };
 
-    /* Use sync_decode so we get the actual result, not just queue status */
     jpeg_decode_result_t res = sync_decode(&req);
     TEST_ASSERT_EQUAL(JPEG_DECODE_ERR_PARAM, res);
 }
@@ -613,7 +683,7 @@ TEST_CASE("error: ROI outside image bounds rejected",
     static uint16_t buf[JPEG_CHUNK_BUF_PIXELS(16)];
 
     jpeg_decode_request_t req = {
-        .source              = make_src_16x16(),
+        .reader              = make_reader_16x16(),
         .roi                 = { 0, 0, 999, 15 },   /* right > image width */
         .scale               = JPEG_SCALE_1_1,
         .out_format          = JPEG_OUTPUT_RGB565,
@@ -635,11 +705,11 @@ TEST_CASE("error: returning false from callback gives ABORTED",
     s_cap.do_abort     = true;
     s_cap.abort_at_row = 10;
 
-    jpeg_view_t view  = jpeg_view_default(320, 240);
+    jpeg_view_intent_t view = jpeg_view_default(320, 240);
+    view.reader       = make_reader_320x240();
     view.chunk_buffer = s_chunk_buf;
 
-    jpeg_decode_result_t res = sync_decode_view(
-        make_src_320x240(), &view, capture_cb, &s_cap);
+    jpeg_decode_result_t res = sync_decode_view(&view, capture_cb, &s_cap);
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_ABORTED, res);
     TEST_ASSERT_LESS_THAN(240, s_cap.rows_received);
@@ -652,29 +722,39 @@ TEST_CASE("error: returning false from callback gives ABORTED",
 TEST_CASE("probe: returns correct 320x240 dimensions",
           "[jpeg][probe]")
 {
-    jpeg_image_info_t info = {0};
-    jpeg_decode_result_t res = jpeg_decoder_probe(
-        make_src_320x240(), &info, s_workbuf, sizeof(s_workbuf));
+    jpeg_image_info_t    info = {0};
+    jpeg_decode_result_t res  = jpeg_decoder_probe(
+        make_reader_320x240(), &info, s_workbuf, sizeof(s_workbuf));
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_OK, res);
     TEST_ASSERT_EQUAL(320, info.width);
     TEST_ASSERT_EQUAL(240, info.height);
 }
 
-TEST_CASE("probe: restores source position — second probe gives same result",
+TEST_CASE("probe: caller resets source — second probe gives same result",
           "[jpeg][probe]")
 {
-    /* Use a named static so both probes go through the same _buf */
-    static jpeg_source_t src;
-    jpeg_decoder_source_from_buffer(&src,
-        test_320x240_jpg_start,
-        test_320x240_jpg_end - test_320x240_jpg_start);
+    /*
+     * The component does not reset the source after probe. The caller
+     * is responsible for returning their source context to position 0.
+     * This test verifies that pattern works correctly.
+     */
+    static buf_ctx_t ctx;
+    ctx = (buf_ctx_t){
+        .data = test_320x240_jpg_start,
+        .len  = test_320x240_jpg_end - test_320x240_jpg_start,
+        .pos  = 0,
+    };
+    jpeg_reader_t reader = { .cb = buf_read_cb, .ctx = &ctx };
 
     jpeg_image_info_t info = {0};
-    jpeg_decoder_probe(src, &info, s_workbuf, sizeof(s_workbuf));
+    jpeg_decoder_probe(reader, &info, s_workbuf, sizeof(s_workbuf));
+
+    /* Caller resets — component provides no reset mechanism */
+    ctx.pos = 0;
 
     jpeg_decode_result_t res = jpeg_decoder_probe(
-        src, &info, s_workbuf, sizeof(s_workbuf));
+        reader, &info, s_workbuf, sizeof(s_workbuf));
 
     TEST_ASSERT_EQUAL(JPEG_DECODE_OK, res);
     TEST_ASSERT_EQUAL(320, info.width);
@@ -685,7 +765,7 @@ TEST_CASE("probe: fails when info_out is NULL",
           "[jpeg][probe]")
 {
     TEST_ASSERT_EQUAL(JPEG_DECODE_ERR_PARAM,
-        jpeg_decoder_probe(make_src_16x16(), NULL,
+        jpeg_decoder_probe(make_reader_16x16(), NULL,
                            s_workbuf, sizeof(s_workbuf)));
 }
 
@@ -694,7 +774,16 @@ TEST_CASE("probe: fails when work_buffer is NULL",
 {
     jpeg_image_info_t info = {0};
     TEST_ASSERT_EQUAL(JPEG_DECODE_ERR_PARAM,
-        jpeg_decoder_probe(make_src_16x16(), &info, NULL, 0));
+        jpeg_decoder_probe(make_reader_16x16(), &info, NULL, 0));
+}
+
+TEST_CASE("probe: fails when reader.cb is NULL",
+          "[jpeg][probe]")
+{
+    jpeg_reader_t     null_reader = { .cb = NULL, .ctx = NULL };
+    jpeg_image_info_t info        = {0};
+    TEST_ASSERT_EQUAL(JPEG_DECODE_ERR_PARAM,
+        jpeg_decoder_probe(null_reader, &info, s_workbuf, sizeof(s_workbuf)));
 }
 
 /* ================================================================== */
