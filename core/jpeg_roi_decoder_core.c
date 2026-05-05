@@ -1,4 +1,13 @@
-/* jpeg_decoder_core.c */
+/* jpeg_decoder_core.c
+ *
+ * Core decode logic. No source backends live here — those are caller
+ * responsibility. The only source abstraction is decode_context_t.reader.
+ *
+ * Single-pass flow for both high-level and low-level paths:
+ *   tjpgd_sys_prepare()  →  scale / ROI resolution  →  tjpgd_sys_decomp()
+ *
+ * No rewind, no double-header-read, no seek() required from the source.
+ */
 
 #include "jpeg_decoder_internal.h"
 #include "tjpgd.h"
@@ -7,6 +16,7 @@
 #include <string.h>
 
 static const char *TAG = "JD_CORE";
+
 /* ============================================================
  *  Public helpers
  * ============================================================ */
@@ -25,15 +35,16 @@ const char *jpeg_decoder_err_to_str(jpeg_decode_result_t r)
     }
 }
 
-jpeg_view_t jpeg_view_default(uint16_t lcd_width, uint16_t lcd_height)
+jpeg_view_intent_t jpeg_view_default(uint16_t lcd_width, uint16_t lcd_height)
 {
-    return (jpeg_view_t){
+    return (jpeg_view_intent_t){
         .lcd_width    = lcd_width,
         .lcd_height   = lcd_height,
         .pan_x        = 0,
         .pan_y        = 0,
         .scale        = JPEG_SCALE_AUTO,
         .out_format   = JPEG_OUTPUT_RGB565,
+        .reader       = { .cb = NULL, .ctx = NULL },
         .chunk_buffer = NULL,   /* caller must set before decoding */
     };
 }
@@ -42,7 +53,7 @@ jpeg_view_t jpeg_view_default(uint16_t lcd_width, uint16_t lcd_height)
  *  Auto scale selection
  * ============================================================ */
 
-jpeg_decode_scale_t jpeg_decoder_auto_scale(
+static jpeg_decode_scale_t jpeg_decoder_auto_scale(
     uint16_t img_w, uint16_t img_h,
     uint16_t lcd_w, uint16_t lcd_h)
 {
@@ -58,45 +69,33 @@ jpeg_decode_scale_t jpeg_decoder_auto_scale(
 }
 
 /* ============================================================
- *  Internal decode context
- * ============================================================ */
-#define JPEG_MAX_ROI_HEIGHT  512u
-
-typedef struct {
-    jpeg_source_t        source;
-    jpeg_roi_t           roi;
-    jpeg_decode_scale_t  scale;
-    jpeg_output_format_t out_format;
-
-    uint16_t *chunk_buffer;        /* caller-owned, JPEG_MCU_MAX_HEIGHT rows */
-    size_t    chunk_buffer_pixels;
-
-    jpeg_chunk_cb_t chunk_cb;
-    jpeg_done_cb_t  done_cb;
-    void           *user_data;
-
-    uint16_t image_width;
-    uint16_t image_height;
-    uint16_t roi_width;
-    uint16_t roi_height;
-
-    uint16_t row_fill_count[JPEG_MAX_ROI_HEIGHT];
-    bool     row_flushed[JPEG_MAX_ROI_HEIGHT];
-    bool     abort;
-} decode_context_t;
-
-/* ============================================================
  *  TJpgDec input callback
+ *
+ *  Passes TJpgDec's own buffer directly to reader.cb — zero copy.
+ *  When buf is NULL, TJpgDec wants to skip forward; NULL is passed
+ *  straight through so seekable sources can fseek instead of reading.
+ *  A retry loop handles partial reads without any internal staging buffer.
  * ============================================================ */
 
 static size_t input_func(JDEC *jd, uint8_t *buf, size_t nbyte)
 {
     decode_context_t *ctx = (decode_context_t *)jd->device;
-    return ctx->source.read(ctx->source.ctx, buf, nbyte);
+    size_t total = 0;
+
+    while (total < nbyte) {
+        /* Pass buf directly (zero copy) or NULL (skip fast-path). */
+        size_t got = ctx->reader.cb(buf ? buf + total : NULL,
+                                    nbyte - total,
+                                    ctx->reader.ctx);
+        if (got == 0)
+            break;   /* source ended or timed out */
+        total += got;
+    }
+    return total;
 }
 
 /* ============================================================
- *  RGB565 -> RGB888
+ *  RGB565 → RGB888
  * ============================================================ */
 
 static void rgb565_to_rgb888(const uint16_t *src, uint8_t *dst, uint16_t n)
@@ -112,15 +111,12 @@ static void rgb565_to_rgb888(const uint16_t *src, uint8_t *dst, uint16_t n)
 /* ============================================================
  *  TJpgDec output callback
  *
- *  TJpgDec scans left-to-right across the full MCU row band
- *  before moving down. Each MCU block is JPEG_MCU_MAX_HEIGHT
- *  rows tall. So by the time row 0's fill_count reaches roi_width,
- *  all other MCUs in the band have already overwritten the single
- *  buffer with their own rows.
+ *  TJpgDec scans left-to-right across the full MCU row band before
+ *  moving down. Each MCU block is JPEG_MCU_MAX_HEIGHT rows tall.
  *
- *  Fix: use (roi_y % JPEG_MCU_MAX_HEIGHT) as a slot index so
- *  each row accumulates in its own dedicated buffer slot.
- *  A row is only flushed once its slot is fully filled.
+ *  Fix for band overwrite: use (roi_y % JPEG_MCU_MAX_HEIGHT) as a
+ *  slot index so each row accumulates in its own dedicated buffer
+ *  slot. A row is flushed exactly once its slot reaches roi_width.
  * ============================================================ */
 
 static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
@@ -128,18 +124,18 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
     decode_context_t *ctx = (decode_context_t *)jd->device;
     const uint16_t   *src = (const uint16_t *)bitmap;
 
+    /* Quick reject — MCU entirely outside ROI */
     if (rect->right  < ctx->roi.left  ||
         rect->left   > ctx->roi.right ||
         rect->bottom < ctx->roi.top   ||
         rect->top    > ctx->roi.bottom)
         return 1;
 
-    
     if (rect->left == 304 && rect->top == 48) {
-    ESP_LOGD("MCU", "last MCU of band 3 — "
-             "chunk_buf[12*320]=%u chunk_buf[12*320+160]=%u",
-             ctx->chunk_buffer[12 * ctx->roi_width],
-             ctx->chunk_buffer[12 * ctx->roi_width + 160]);
+        ESP_LOGD("MCU", "last MCU of band 3 — "
+                 "chunk_buf[12*w]=%u chunk_buf[12*w+160]=%u",
+                 ctx->chunk_buffer[12 * ctx->roi_width],
+                 ctx->chunk_buffer[12 * ctx->roi_width + 160]);
     }
 
     uint16_t mcu_w   = rect->right - rect->left + 1;
@@ -172,16 +168,13 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
         if (ctx->row_fill_count[roi_y] >= ctx->roi_width &&
             !ctx->row_flushed[roi_y]) {
 
-            /* targeted log around the known failure boundary */
-            uint16_t slot = roi_y % JPEG_MCU_MAX_HEIGHT;
             if (roi_y >= 55 && roi_y <= 65) {
                 ESP_LOGD("FLUSH", "roi_y=%u slot=%u fill=%u "
-                "buf[slot*w+0]=%u buf[slot*w+160]=%u buf[slot*w+319]=%u",
-                 roi_y, slot, ctx->row_fill_count[roi_y],
-                 ctx->chunk_buffer[slot * ctx->roi_width + 0],
-                 ctx->chunk_buffer[slot * ctx->roi_width + 160],
-                 ctx->chunk_buffer[slot * ctx->roi_width + 319]);
-            //Targeted log end
+                         "buf[slot*w+0]=%u buf[slot*w+160]=%u buf[slot*w+319]=%u",
+                         roi_y, slot, ctx->row_fill_count[roi_y],
+                         ctx->chunk_buffer[slot * ctx->roi_width + 0],
+                         ctx->chunk_buffer[slot * ctx->roi_width + 160],
+                         ctx->chunk_buffer[slot * ctx->roi_width + 319]);
             }
 
             jpeg_chunk_event_t evt = {
@@ -214,24 +207,179 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
 }
 
 /* ============================================================
- *  Core runner
+ *  Shared helper: fire done_callback with a fully-populated event
+ * ============================================================ */
+
+static void fire_done(jpeg_done_cb_t done_cb, void *user_data,
+                      jpeg_decode_result_t result,
+                      const JDEC *jd,              /* may be NULL on early error */
+                      const decode_context_t *ctx, /* may be NULL on early error */
+                      jpeg_decode_scale_t scale,
+                      jpeg_output_format_t out_format)
+{
+    if (!done_cb)
+        return;
+
+    jpeg_done_event_t evt = {
+        .result     = result,
+        .image      = { jd ? jd->width : 0, jd ? jd->height : 0 },
+        .roi_scaled = ctx ? ctx->roi  : (jpeg_roi_t){0},
+        .scale      = scale,
+        .out_format = out_format,
+        .user_data  = user_data,
+    };
+    done_cb(&evt);
+}
+
+/* ============================================================
+ *  High-level core runner
+ *
+ *  Single forward pass:
+ *    prepare → auto-scale resolution → ROI computation → decomp
+ *
+ *  done_callback is always fired, even on early param errors.
  * ============================================================ */
 
 jpeg_decode_result_t
-jpeg_decoder_core_run(
-    const jpeg_decode_request_t *req,
-    jpeg_done_event_t           *done_evt,
-    void                        *workbuf,
-    size_t                       workbuf_size
+jpeg_decoder_core_run_view(
+    const jpeg_view_intent_t *intent,
+    void                     *workbuf,
+    size_t                    workbuf_size,
+    jpeg_chunk_cb_t           chunk_cb,
+    jpeg_done_cb_t            done_cb,
+    void                     *user_data
 ){
-    if (!req || !workbuf || !req->chunk_buffer)
+    jpeg_decode_result_t result = JPEG_DECODE_ERR_PARAM;
+
+    if (!intent || !workbuf || !intent->reader.cb || !intent->chunk_buffer) {
+        fire_done(done_cb, user_data, JPEG_DECODE_ERR_PARAM,
+                  NULL, NULL, JPEG_SCALE_1_1, JPEG_OUTPUT_RGB565);
         return JPEG_DECODE_ERR_PARAM;
-    if (req->scale == JPEG_SCALE_AUTO)
-        return JPEG_DECODE_ERR_PARAM;
+    }
 
     decode_context_t ctx = {
-        .source              = req->source,
-        .roi                 = req->roi,
+        .reader              = intent->reader,
+        .out_format          = intent->out_format,
+        .chunk_buffer        = intent->chunk_buffer,
+        .chunk_buffer_pixels = JPEG_CHUNK_BUF_PIXELS(intent->lcd_width),
+        .chunk_cb            = chunk_cb,
+        .done_cb             = done_cb,
+        .user_data           = user_data,
+        .abort               = false,
+    };
+    memset(ctx.row_fill_count, 0, sizeof(ctx.row_fill_count));
+    memset(ctx.row_flushed,    0, sizeof(ctx.row_flushed));
+
+    JDEC jd;
+    JRESULT jr = tjpgd_sys_prepare(&jd, input_func, workbuf, workbuf_size, &ctx);
+    if (jr != JDR_OK) {
+        fire_done(done_cb, user_data, JPEG_DECODE_ERR_INPUT,
+                  NULL, NULL, JPEG_SCALE_1_1, intent->out_format);
+        return JPEG_DECODE_ERR_INPUT;
+    }
+
+    /* Resolve scale now that jd.width / jd.height are valid */
+    jpeg_decode_scale_t scale = intent->scale;
+    if (scale == JPEG_SCALE_AUTO)
+        scale = jpeg_decoder_auto_scale(jd.width, jd.height,
+                                        intent->lcd_width, intent->lcd_height);
+    ctx.scale = scale;
+
+    uint16_t div      = 1u << (uint8_t)scale;
+    uint16_t scaled_w = jd.width  / div;
+    uint16_t scaled_h = jd.height / div;
+    uint16_t lcd_w    = intent->lcd_width;
+    uint16_t lcd_h    = intent->lcd_height;
+
+    ctx.image_width  = scaled_w;
+    ctx.image_height = scaled_h;
+
+    /* Centered + panned ROI in scaled (output) coords */
+    int32_t cx     = ((int32_t)scaled_w - lcd_w) / 2 + intent->pan_x;
+    int32_t cy     = ((int32_t)scaled_h - lcd_h) / 2 + intent->pan_y;
+    int32_t max_cx = (int32_t)scaled_w - lcd_w;
+    int32_t max_cy = (int32_t)scaled_h - lcd_h;
+
+    ESP_LOGI(TAG, "pre-clamp:  cx=%ld cy=%ld  max_cx=%ld max_cy=%ld",
+             cx, cy, max_cx, max_cy);
+
+    if (cx < 0)                      cx = 0;
+    if (cy < 0)                      cy = 0;
+    if (max_cx >= 0 && cx > max_cx)  cx = max_cx;
+    if (max_cy >= 0 && cy > max_cy)  cy = max_cy;
+
+    ctx.roi.left   = (uint16_t)cx;
+    ctx.roi.top    = (uint16_t)cy;
+    ctx.roi.right  = (uint16_t)(cx + lcd_w - 1);
+    ctx.roi.bottom = (uint16_t)(cy + lcd_h - 1);
+
+    ESP_LOGI(TAG, "post-clamp: cx=%ld cy=%ld", cx, cy);
+    ESP_LOGI(TAG, "ROI(scaled): left=%u top=%u right=%u bottom=%u",
+             ctx.roi.left, ctx.roi.top, ctx.roi.right, ctx.roi.bottom);
+
+    if (ctx.roi.left   >  ctx.roi.right         ||
+        ctx.roi.top    >  ctx.roi.bottom         ||
+        ctx.roi.right  >= ctx.image_width        ||
+        ctx.roi.bottom >= ctx.image_height) {
+        fire_done(done_cb, user_data, JPEG_DECODE_ERR_PARAM,
+                  &jd, &ctx, scale, intent->out_format);
+        return JPEG_DECODE_ERR_PARAM;
+    }
+
+    ctx.roi_width  = ctx.roi.right  - ctx.roi.left  + 1;
+    ctx.roi_height = ctx.roi.bottom - ctx.roi.top   + 1;
+
+    if (ctx.roi_height > JPEG_MAX_ROI_HEIGHT) {
+        fire_done(done_cb, user_data, JPEG_DECODE_ERR_PARAM,
+                  &jd, &ctx, scale, intent->out_format);
+        return JPEG_DECODE_ERR_PARAM;
+    }
+
+    if (ctx.chunk_buffer_pixels < (size_t)ctx.roi_width * JPEG_MCU_MAX_HEIGHT) {
+        fire_done(done_cb, user_data, JPEG_DECODE_ERR_PARAM,
+                  &jd, &ctx, scale, intent->out_format);
+        return JPEG_DECODE_ERR_PARAM;
+    }
+
+    /* Stream cursor is already past headers — no rewind needed */
+    jr = tjpgd_sys_decomp(&jd, output_func, scale);
+
+    if      (ctx.abort)    result = JPEG_DECODE_ABORTED;
+    else if (jr == JDR_OK) result = JPEG_DECODE_OK;
+    else                   result = JPEG_DECODE_ERR_INTR;
+
+    fire_done(done_cb, user_data, result, &jd, &ctx, scale, intent->out_format);
+    return result;
+}
+
+/* ============================================================
+ *  Low-level core runner
+ *
+ *  ROI is pre-supplied in unscaled JPEG coords; JPEG_SCALE_AUTO rejected.
+ *  Single forward pass: prepare → scale divisor applied → validate → decomp.
+ *  done_callback is always fired, even on early param errors.
+ * ============================================================ */
+
+jpeg_decode_result_t
+jpeg_decoder_core_run_request(const jpeg_decode_request_t *req)
+{
+    if (!req || !req->work_buffer || !req->chunk_buffer || !req->reader.cb) {
+        if (req && req->done_callback) {
+            jpeg_done_event_t evt = { .result     = JPEG_DECODE_ERR_PARAM,
+                                      .user_data  = req->user_data };
+            req->done_callback(&evt);
+        }
+        return JPEG_DECODE_ERR_PARAM;
+    }
+    if (req->scale == JPEG_SCALE_AUTO) {
+        fire_done(req->done_callback, req->user_data, JPEG_DECODE_ERR_PARAM,
+                  NULL, NULL, JPEG_SCALE_1_1, req->out_format);
+        return JPEG_DECODE_ERR_PARAM;
+    }
+
+    decode_context_t ctx = {
+        .reader              = req->reader,
+        .roi                 = req->roi,   /* will be scaled below */
         .scale               = req->scale,
         .out_format          = req->out_format,
         .chunk_buffer        = req->chunk_buffer,
@@ -241,15 +389,20 @@ jpeg_decoder_core_run(
         .user_data           = req->user_data,
         .abort               = false,
     };
-
     memset(ctx.row_fill_count, 0, sizeof(ctx.row_fill_count));
     memset(ctx.row_flushed,    0, sizeof(ctx.row_flushed));
 
     JDEC jd;
-    JRESULT jr = tjpgd_sys_prepare(&jd, input_func, workbuf, workbuf_size, &ctx);
-    if (jr != JDR_OK)
+    JRESULT jr = tjpgd_sys_prepare(&jd, input_func,
+                                    req->work_buffer, req->work_buffer_size,
+                                    &ctx);
+    if (jr != JDR_OK) {
+        fire_done(req->done_callback, req->user_data, JPEG_DECODE_ERR_INPUT,
+                  NULL, NULL, req->scale, req->out_format);
         return JPEG_DECODE_ERR_INPUT;
+    }
 
+    /* Convert unscaled ROI → scaled (output) coords */
     uint16_t div       = 1u << (uint8_t)ctx.scale;
     ctx.image_width    = jd.width  / div;
     ctx.image_height   = jd.height / div;
@@ -261,19 +414,28 @@ jpeg_decoder_core_run(
     if (ctx.roi.left   >  ctx.roi.right         ||
         ctx.roi.top    >  ctx.roi.bottom         ||
         ctx.roi.right  >= ctx.image_width        ||
-        ctx.roi.bottom >= ctx.image_height)
+        ctx.roi.bottom >= ctx.image_height) {
+        fire_done(req->done_callback, req->user_data, JPEG_DECODE_ERR_PARAM,
+                  &jd, &ctx, ctx.scale, ctx.out_format);
         return JPEG_DECODE_ERR_PARAM;
+    }
 
     ctx.roi_width  = ctx.roi.right  - ctx.roi.left  + 1;
     ctx.roi_height = ctx.roi.bottom - ctx.roi.top   + 1;
 
-    if (ctx.roi_height > JPEG_MAX_ROI_HEIGHT)
+    if (ctx.roi_height > JPEG_MAX_ROI_HEIGHT) {
+        fire_done(req->done_callback, req->user_data, JPEG_DECODE_ERR_PARAM,
+                  &jd, &ctx, ctx.scale, ctx.out_format);
         return JPEG_DECODE_ERR_PARAM;
+    }
 
-    /* chunk_buffer must hold JPEG_MCU_MAX_HEIGHT full rows */
-    if (ctx.chunk_buffer_pixels < (size_t)ctx.roi_width * JPEG_MCU_MAX_HEIGHT)
+    if (ctx.chunk_buffer_pixels < (size_t)ctx.roi_width * JPEG_MCU_MAX_HEIGHT) {
+        fire_done(req->done_callback, req->user_data, JPEG_DECODE_ERR_PARAM,
+                  &jd, &ctx, ctx.scale, ctx.out_format);
         return JPEG_DECODE_ERR_PARAM;
+    }
 
+    /* Stream cursor already past headers — no rewind needed */
     jr = tjpgd_sys_decomp(&jd, output_func, ctx.scale);
 
     jpeg_decode_result_t result;
@@ -281,33 +443,29 @@ jpeg_decoder_core_run(
     else if (jr == JDR_OK) result = JPEG_DECODE_OK;
     else                   result = JPEG_DECODE_ERR_INTR;
 
-    if (done_evt) {
-        done_evt->result     = result;
-        done_evt->image      = (jpeg_image_info_t){ jd.width, jd.height };
-        done_evt->roi_scaled = ctx.roi;
-        done_evt->scale      = ctx.scale;
-        done_evt->out_format = ctx.out_format;
-        done_evt->user_data  = ctx.user_data;
-    }
-
+    fire_done(req->done_callback, req->user_data, result,
+              &jd, &ctx, ctx.scale, ctx.out_format);
     return result;
 }
 
 /* ============================================================
- *  Probe
+ *  Probe — reads only headers, returns dimensions
+ *
+ *  The caller must reset their own source after this call.
+ *  The component provides no reset mechanism.
  * ============================================================ */
 
 jpeg_decode_result_t
 jpeg_decoder_probe(
-    jpeg_source_t      source,
+    jpeg_reader_t      reader,
     jpeg_image_info_t *info_out,
     void              *workbuf,
     size_t             workbuf_size
 ){
-    if (!info_out || !workbuf)
+    if (!info_out || !workbuf || !reader.cb)
         return JPEG_DECODE_ERR_PARAM;
 
-    decode_context_t ctx = { .source = source };
+    decode_context_t ctx = { .reader = reader };
     JDEC jd;
     JRESULT jr = tjpgd_sys_prepare(&jd, input_func, workbuf, workbuf_size, &ctx);
     if (jr != JDR_OK)
@@ -315,92 +473,6 @@ jpeg_decoder_probe(
 
     info_out->width  = jd.width;
     info_out->height = jd.height;
-    source.seek(source.ctx, 0);
     return JPEG_DECODE_OK;
-}
-
-/* ============================================================
- *  View request preparation  (no malloc — chunk_buffer from caller)
- * ============================================================ */
-
-jpeg_decode_result_t
-jpeg_decoder_prepare_view_request(
-    jpeg_source_t         source,
-    const jpeg_view_t    *view,
-    void                 *work_buffer,
-    size_t                work_buffer_size,
-    jpeg_chunk_cb_t       chunk_callback,
-    jpeg_done_cb_t        done_callback,
-    void                 *user_data,
-    jpeg_decode_request_t *req_out
-){
-    if (!view || !work_buffer || !req_out)
-        return JPEG_DECODE_ERR_PARAM;
-
-    if (!view->chunk_buffer) {
-        return JPEG_DECODE_ERR_PARAM;   /* caller must provide chunk_buffer */
-    }
-
-    /* Step 1: probe */
-    jpeg_image_info_t info;
-    jpeg_decode_result_t res = jpeg_decoder_probe(
-        source, &info, work_buffer, work_buffer_size);
-    if (res != JPEG_DECODE_OK)
-        return res;
-
-    /* Step 2: resolve scale */
-    jpeg_decode_scale_t scale = view->scale;
-    if (scale == JPEG_SCALE_AUTO)
-        scale = jpeg_decoder_auto_scale(
-            info.width, info.height,
-            view->lcd_width, view->lcd_height);
-
-    uint16_t div          = 1u << (uint8_t)scale;
-    uint16_t scaled_img_w = info.width  / div;
-    uint16_t scaled_img_h = info.height / div;
-    uint16_t lcd_w        = view->lcd_width;
-    uint16_t lcd_h        = view->lcd_height;
-
-    /* Step 3: compute centered + clamped ROI */
-    int32_t cx = ((int32_t)scaled_img_w - lcd_w) / 2 + view->pan_x;
-    int32_t cy = ((int32_t)scaled_img_h - lcd_h) / 2 + view->pan_y;
-    int32_t max_x = (int32_t)scaled_img_w - lcd_w;
-    int32_t max_y = (int32_t)scaled_img_h - lcd_h;
-    ESP_LOGI("JPEG_PAN", "pre-clamp:  cx=%ld cy=%ld  max_x=%ld max_y=%ld",
-            cx, cy, max_x, max_y);
-
-    if (cx < 0)                    cx = 0;
-    if (cy < 0)                    cy = 0;
-    if (max_x >= 0 && cx > max_x)  cx = max_x;
-    if (max_y >= 0 && cy > max_y)  cy = max_y;
-
-    
-    jpeg_roi_t roi = {
-        .left   = (uint16_t)( cx              * div),
-        .top    = (uint16_t)( cy              * div),
-        .right  = (uint16_t)((cx + lcd_w - 1) * div),
-        .bottom = (uint16_t)((cy + lcd_h - 1) * div),
-    };
-    ESP_LOGI("JPEG_PAN", "post-clamp: cx=%ld cy=%ld",  cx, cy);
-    ESP_LOGI("JPEG_PAN", "ROI: left=%u top=%u right=%u bottom=%u",
-            roi.left, roi.top, roi.right, roi.bottom);   
-            
-    
-
-    /* Step 4: fill request — no malloc, chunk_buffer from caller */
-    *req_out = (jpeg_decode_request_t){
-        .source              = source,
-        .roi                 = roi,
-        .scale               = scale,
-        .out_format          = view->out_format,
-        .work_buffer         = work_buffer,
-        .work_buffer_size    = work_buffer_size,
-        .chunk_buffer        = view->chunk_buffer,
-        .chunk_buffer_pixels = JPEG_CHUNK_BUF_PIXELS(lcd_w),
-        .chunk_callback      = chunk_callback,
-        .done_callback       = done_callback,   /* direct — no wrapper needed */
-        .user_data           = user_data,
-    };
-
-    return JPEG_DECODE_OK;
+    /* caller resets their own source — no seek() call here */
 }

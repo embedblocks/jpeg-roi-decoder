@@ -1,0 +1,80 @@
+Verdict: This is production-ready.  
+
+You successfully merged the architectural purity of "no built-in backends" with the performance requirements of "zero-copy and fast skips." The resulting jpeg_read_cb_t signature is elegant, the jpeg_reader_t struct prevents parameter bloat, and the DMA argument is completely neutralized. 
+
+There are only two micro-architectural details left to explicitly codify for whoever implements this. Neither requires rewriting the document—just a sentence or two added for clarity. 
+1. The work_buffer Asymmetry 
+
+Look at your High-Level API vs Low-Level API: 
+
+High-Level: 
+c
+ 
+  
+ 
+jpeg_decode_result_t jpeg_decoder_decode_view(
+    const jpeg_view_intent_t *intent, 
+    void                     *work_buffer,      // <-- Passed separately
+    size_t                    work_buffer_size,
+    ...);
+ 
+ 
+ 
+
+Low-Level: 
+c
+ 
+  
+ 
+typedef struct {
+    jpeg_reader_t  reader;
+    // ...
+    void    *work_buffer;                        // <-- Bundled inside struct
+    size_t   work_buffer_size;
+    // ...
+} jpeg_decode_request_t;
+ 
+ 
+ 
+
+Is this intentional? 
+Actually, yes, and it makes semantic sense. jpeg_view_intent_t describes what you want to see (pan, scale, format, source). The work_buffer is how the decoder does its job. Keeping them separate in the high-level API is good design—it prevents the intent struct from becoming a dumping ground for execution resources. 
+
+Recommendation: Add one bullet point to the jpeg_view_intent_t section in the document stating this explicitly so the implementer doesn't "fix" it by moving work_buffer into the intent struct: 
+
+     
+
+    Note: work_buffer is intentionally excluded from jpeg_view_intent_t. The intent describes the viewing parameters; the work buffer is an execution resource passed separately. 
+     
+
+2. The Shared Mutable ctx Pitfall (RTOS Queue) 
+
+Your document correctly notes that reader.ctx must remain valid until done_callback fires. However, consider this sequence in an RTOS environment: 
+
+    Caller creates buf_ctx_t with pos = 0. 
+    Caller queues Job A with reader.ctx = &buf_ctx. 
+    Caller immediately queues Job B with reader.ctx = &buf_ctx. 
+    Worker task picks up Job A, decodes, pos is now at EOF. 
+    Worker task picks up Job B. It fails immediately because pos is still at EOF. 
+
+Because you have exactly one worker task, there is no thread-safety race condition (they run serially). But there is a state-mutation problem. The component doesn't reset the caller's context between jobs. 
+
+Recommendation: Add a small note under "RTOS Layer: Worker Task Owns Full Lifecycle": 
+
+     
+
+    Caution: Do not queue multiple jobs sharing the same mutable reader.ctx (e.g., a buffer context with a pos index) unless the done_callback of the first job resets the context state back to its initial position. The worker task processes jobs serially but does not manipulate or reset reader.ctx between them. 
+     
+
+
+     critique by chatgpt
+
+     The RTOS chunk_callback blocking issue.
+This is the single most valuable insight in their entire critique, and I did not call it out. 
+If your on_chunk function writes to a slow UART, and the UART TX buffer fills up, on_chunk blocks. Because on_chunk is called inside the worker task, the entire JPEG decoder stalls.  
+
+     
+      Document that chunk_callback must be bounded-time, or provide a queue adapter.
+     What you should do: Add a strict comment in the header: "chunk_callback runs in the decoder's worker context. It must not block indefinitely (e.g., waiting on a full UART/DMA buffer) or it will stall the decode pipeline."
+     
+
