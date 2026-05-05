@@ -2,62 +2,100 @@
 #define JPEG_DECODER_INTERNAL_H
 
 #include "jpeg_roi_decoder.h"
+#include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+/* ============================================================
+ *  Internal decode context — lives on the stack inside core_run
+ * ============================================================ */
+#define JPEG_MAX_ROI_HEIGHT  512u
 
-/*
- * Called by the worker task (FreeRTOS) and directly by jpeg_decoder_decode()
- * (sync). Not part of the public API.
+typedef struct {
+    jpeg_reader_t        reader;      /* cb + ctx, no other source state */
+
+    jpeg_roi_t           roi;         /* in scaled (output) coords after prepare */
+    jpeg_decode_scale_t  scale;
+    jpeg_output_format_t out_format;
+
+    uint16_t *chunk_buffer;
+    size_t    chunk_buffer_pixels;
+
+    jpeg_chunk_cb_t chunk_cb;
+    jpeg_done_cb_t  done_cb;
+    void           *user_data;
+
+    uint16_t image_width;             /* scaled image dimensions */
+    uint16_t image_height;
+    uint16_t roi_width;
+    uint16_t roi_height;
+
+    uint16_t row_fill_count[JPEG_MAX_ROI_HEIGHT];
+    bool     row_flushed[JPEG_MAX_ROI_HEIGHT];
+    bool     abort;
+} decode_context_t;
+
+/* ============================================================
+ *  Unified job payload for the RTOS decode queue
+ *
+ *  use_intent == true  → worker calls jpeg_decoder_core_run_view
+ *  use_intent == false → worker calls jpeg_decoder_core_run_request
+ *
+ *  reader at the top level is the authoritative source reference.
+ *  For the intent path it duplicates intent.reader (harmless).
+ *  The worker never resets reader.ctx between jobs — see header docs.
+ * ============================================================ */
+typedef struct {
+    jpeg_reader_t   reader;      /* authoritative (cb + ctx)       */
+    bool            use_intent;  /* selects which core function runs */
+
+    union {
+        jpeg_view_intent_t intent;   /* high-level path */
+        struct {
+            jpeg_roi_t           roi;
+            jpeg_decode_scale_t  scale;
+            jpeg_output_format_t out_format;
+            uint16_t            *chunk_buffer;
+            size_t               chunk_buffer_pixels;
+        } raw;                       /* low-level path  */
+    };
+
+    void            *work_buffer;
+    size_t           work_buffer_size;
+    jpeg_chunk_cb_t  chunk_callback;
+    jpeg_done_cb_t   done_callback;
+    void            *user_data;
+} decode_job_t;
+
+/* ============================================================
+ *  Core internal API  (called from RTOS worker or directly)
+ *
+ *  Both functions run a single forward pass:
+ *    tjpgd_sys_prepare → scale resolution / ROI computation → tjpgd_sys_decomp
+ *  No rewind is performed; no seek is required from the source.
+ *
+ *  done_callback is ALWAYS fired — even on early parameter errors.
+ *  Return value mirrors done_callback.result.
+ * ============================================================ */
+
+/**
+ * High-level runner.
+ * Scale and ROI are resolved from intent after prepare.
+ * JPEG_SCALE_AUTO is valid in intent->scale.
  */
-jpeg_decode_result_t jpeg_decoder_core_run(
-    const jpeg_decode_request_t *req,
-    jpeg_done_event_t           *done_evt,
-    void                        *workbuf,
-    size_t                       workbuf_size
+jpeg_decode_result_t jpeg_decoder_core_run_view(
+    const jpeg_view_intent_t *intent,
+    void                     *workbuf,
+    size_t                    workbuf_size,
+    jpeg_chunk_cb_t           chunk_cb,
+    jpeg_done_cb_t            done_cb,
+    void                     *user_data
 );
 
-/*
- * Pick largest scale where scaled image still covers lcd_w x lcd_h.
+/**
+ * Low-level runner.
+ * ROI is pre-supplied in unscaled JPEG coords; req->scale must not be AUTO.
  */
-jpeg_decode_scale_t jpeg_decoder_auto_scale(
-    uint16_t img_w, uint16_t img_h,
-    uint16_t lcd_w, uint16_t lcd_h
+jpeg_decode_result_t jpeg_decoder_core_run_request(
+    const jpeg_decode_request_t *req
 );
-
-/*
- * Shared view-to-request preparation used by both platform adapters.
- *
- * Probes the JPEG, resolves AUTO scale, computes the centered and
- * clamped ROI, and heap-allocates a chunk buffer for one row.
- *
- * On success:
- *   - *req_out is filled and ready to pass to jpeg_decoder_core_run()
- *   - req_out->chunk_buffer is heap-allocated
- *   - req_out->done_callback is set to an internal wrapper that frees
- *     chunk_buffer and then calls the original done_callback
- *   - req_out->user_data points to the wrapper context (also heap-allocated)
- *
- * On failure:
- *   - returns error code, no heap memory is left allocated
- *
- * The platform adapter must NOT free chunk_buffer manually — the wrapper
- * done_callback always does it, including on the async FreeRTOS path.
- */
-jpeg_decode_result_t jpeg_decoder_prepare_view_request(
-    jpeg_source_t        source,
-    const jpeg_view_t   *view,
-    void                *work_buffer,
-    size_t               work_buffer_size,
-    jpeg_chunk_cb_t      chunk_callback,
-    jpeg_done_cb_t       done_callback,
-    void                *user_data,
-    jpeg_decode_request_t *req_out
-);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* JPEG_DECODER_INTERNAL_H */
