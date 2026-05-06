@@ -1,0 +1,9 @@
+menu "JPEG HTTP Stream Example"
+
+    config JPEG_URL
+        string "JPEG Image URL"
+        default "https://i.gzn.jp/img/2009/06/18/lenna/000.jpg"
+        help
+            HTTP/HTTPS URL of the JPEG image to stream and decode.
+
+endmenu
