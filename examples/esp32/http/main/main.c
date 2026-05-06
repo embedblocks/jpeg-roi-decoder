@@ -23,6 +23,7 @@
 
 static uint8_t  workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
 static uint16_t chunk_buf[JPEG_CHUNK_BUF_PIXELS(LCD_W)];
+static uint8_t  input_buf[JPEG_INPUT_BUF_SIZE];
 
 /* ============================================================
  *  Image header for UART sync
@@ -151,13 +152,18 @@ static bool http_open(const char *url)
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_GET,
-        .timeout_ms = 20000,
-        /* Increased buffer size to safely handle full TLS records (16KB max) */
-        .buffer_size = 16384,
+        .timeout_ms = 10000,
+        
+        /* 
+         * Set to 2048 to match the component's internal max request size.
+         * - Not 0: Prevents HTTPS/chunked parsing crashes.
+         * - Not 16384: Prevents greedy blocking/hangs.
+         */
+        .buffer_size = 2048,
         .buffer_size_tx = 1024,
-        .crt_bundle_attach = esp_crt_bundle_attach,
-        /* CRITICAL: Spoof a real browser to prevent CDN/WAF from dropping the connection */
+        
         .user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        .crt_bundle_attach = esp_crt_bundle_attach,
     };
 
     http_ctx.client = esp_http_client_init(&config);
@@ -289,6 +295,7 @@ void app_main(void)
     jpeg_view_intent_t view = jpeg_view_default(LCD_W, LCD_H);
     view.out_format   = JPEG_OUTPUT_RGB565;
     view.chunk_buffer = chunk_buf;
+    view.input_buffer = input_buf;
     view.scale        = JPEG_SCALE_AUTO;
     view.pan_x        = -100;
     view.pan_y        = -100;
