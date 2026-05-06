@@ -80,6 +80,9 @@ static size_t http_read_cb(uint8_t *dst, size_t max, void *vctx)
             size_t chunk = max - skipped;
             if (chunk > sizeof(discard)) chunk = sizeof(discard);
             int r = esp_http_client_read(ctx->client, (char *)discard, chunk);
+            #ifdef DEBUG
+            ESP_LOGI(TAG, "Skipping %d bytes", r);
+            #endif
             if (r <= 0) {
                 ctx->eof = true;
                 break;
@@ -92,6 +95,9 @@ static size_t http_read_cb(uint8_t *dst, size_t max, void *vctx)
 
     /* Normal read — decoder wants up to 'max' bytes into 'dst' */
     int r = esp_http_client_read(ctx->client, (char *)dst, max);
+    #ifdef DEBUG
+            ESP_LOGI(TAG, "Reading %d bytes", r);
+    #endif
     if (r < 0) {
         ctx->error = true;
         return 0;
@@ -145,33 +151,35 @@ static bool http_open(const char *url)
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_GET,
-        .timeout_ms = 15000,
-        /* Internal recv buffer — controls socket read size, NOT response buffering */
-        .buffer_size = 2048,
-        .buffer_size_tx = 512,
-        /* HTTPS certificate verification via Mozilla bundle */
+        .timeout_ms = 20000,
+        /* Increased buffer size to safely handle full TLS records (16KB max) */
+        .buffer_size = 16384,
+        .buffer_size_tx = 1024,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        /* CRITICAL: Spoof a real browser to prevent CDN/WAF from dropping the connection */
+        .user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     };
 
     http_ctx.client = esp_http_client_init(&config);
     if (!http_ctx.client) {
+        ESP_LOGE(TAG, "HTTP client init failed");
         return false;
     }
 
-    /* Open connection and send request */
     if (esp_http_client_open(http_ctx.client, 0) != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP open failed");
         esp_http_client_cleanup(http_ctx.client);
         http_ctx.client = NULL;
         return false;
     }
 
-    /* Read response headers (NOT the body) */
     int content_length = esp_http_client_fetch_headers(http_ctx.client);
     int status = esp_http_client_get_status_code(http_ctx.client);
 
-    ESP_LOGI(TAG, "HTTP %d, size: %d bytes", status, content_length);
+    ESP_LOGI(TAG, "HTTP %d, len=%d", status, content_length);
 
     if (status != 200) {
+        ESP_LOGE(TAG, "HTTP status %d — aborting", status);
         esp_http_client_close(http_ctx.client);
         esp_http_client_cleanup(http_ctx.client);
         http_ctx.client = NULL;
