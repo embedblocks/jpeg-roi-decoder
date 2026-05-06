@@ -21,6 +21,7 @@ extern const uint8_t test_jpg_end[]   asm("_binary_test_image_jpg_end");
 
 static uint8_t  workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
 static uint16_t chunk_buf[JPEG_CHUNK_BUF_PIXELS(LCD_W)];
+static uint8_t  input_buf[JPEG_INPUT_BUF_SIZE];
 
 typedef struct {
     uint8_t  sync[3];     // 0xAA 0xAA 0xAA - sync pattern
@@ -47,6 +48,8 @@ static size_t buf_read_cb(uint8_t *dst, size_t max, void *vctx)
     buf_ctx_t *bc = vctx;
     size_t avail  = bc->len - bc->pos;
     size_t n      = max < avail ? max : avail;
+    ESP_LOGI(TAG, "buf_read_cb: pos %zu, avail %zu, req %zu, read %zu",
+             bc->pos, avail, max, n);
     if (dst)
         memcpy(dst, bc->data + bc->pos, n);
     bc->pos += n;   /* advance even on skip (dst == NULL) */
@@ -155,6 +158,7 @@ void app_main(void)
     jpeg_view_intent_t view = jpeg_view_default(LCD_W, LCD_H);
     view.out_format   = JPEG_OUTPUT_RGB565;
     view.chunk_buffer = chunk_buf;
+    view.input_buffer = input_buf;
     view.scale        = JPEG_SCALE_AUTO;
     view.pan_x        = -100;
     view.pan_y        = -100;
