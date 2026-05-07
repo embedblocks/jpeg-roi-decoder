@@ -16,7 +16,7 @@
 #define LCD_H   240
 
 #define JPEG_URL    CONFIG_JPEG_URL
-#define DEBUG 1
+//#define DEBUG 1
 /* ============================================================
  *  Static buffers
  * ============================================================ */
@@ -148,13 +148,8 @@ static bool http_open(const char *url)
     esp_http_client_config_t config = {
         .url = url,
         .method = HTTP_METHOD_GET,
-        .timeout_ms = 10000,
+        // .timeout_ms = 10000,  <-- You can leave this here, but it won't fix the read hang
         
-        /* 
-         * Set to 2048 to match the component's internal max request size.
-         * - Not 0: Prevents HTTPS/chunked parsing crashes.
-         * - Not 16384: Prevents greedy blocking/hangs.
-         */
         .buffer_size = 2048,
         .buffer_size_tx = 1024,
         
@@ -167,6 +162,12 @@ static bool http_open(const char *url)
         ESP_LOGE(TAG, "HTTP client init failed");
         return false;
     }
+
+    // ========================================================
+    // THE CRITICAL FIX: Forcefully set the READ timeout
+    // This penetrates through to the mbedTLS layer
+    // ========================================================
+    esp_http_client_set_timeout_ms(http_ctx.client, 10000);
 
     if (esp_http_client_open(http_ctx.client, 0) != ESP_OK) {
         ESP_LOGE(TAG, "HTTP open failed");
@@ -290,12 +291,18 @@ void app_main(void)
     jpeg_decoder_init();
 
     /* Open HTTP stream (headers only, body streams on demand) */
+
+    ESP_LOGI(TAG, "Opening HTTP stream...");
     if (!http_open(JPEG_URL)) {
         ESP_LOGE(TAG, "HTTP open failed");
         while (1) vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 
+    ESP_LOGI(TAG, "Opened HTTP stream, starting decoder...");
+    
     /* Build view intent — reader fetches data incrementally via http_read_cb */
+
+    
     jpeg_view_intent_t view = jpeg_view_default(LCD_W, LCD_H);
     view.out_format   = JPEG_OUTPUT_RGB565;
     view.chunk_buffer = chunk_buf;
@@ -313,6 +320,8 @@ void app_main(void)
      * repeatedly, each time asking for only the bytes it needs.
      * Data flows: socket → http_read_cb → decoder → on_chunk → UART
      */
+
+     
     jpeg_decoder_decode_view(
         &view,
         workbuf, sizeof(workbuf),
@@ -323,8 +332,14 @@ void app_main(void)
 
     
 
-    esp_log_level_set("*", ESP_LOG_WARN);
+    //esp_log_level_set("*", ESP_LOG_WARN);
     ESP_LOGI(TAG, "Done — %d bytes from HTTP", http_ctx.bytes_total);
 
-    while (1) vTaskDelay(1000 / portTICK_PERIOD_MS);
+    //uint8_t dummy[2000];
+
+    while (1) {
+        
+      //  http_read_cb(dummy, sizeof(dummy), &http_ctx);
+        vTaskDelay(100 / portTICK_PERIOD_MS);
+    }
 }
