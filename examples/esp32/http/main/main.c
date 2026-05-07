@@ -136,10 +136,6 @@ static bool on_chunk(const jpeg_chunk_event_t *evt)
     return true;
 }
 
-static void on_done(const jpeg_done_event_t *evt)
-{
-    (void)evt;
-}
 
 /* ============================================================
  *  HTTP stream open / close
@@ -205,6 +201,14 @@ static void http_close(void)
         esp_http_client_cleanup(http_ctx.client);
         http_ctx.client = NULL;
     }
+}
+
+static void on_done(const jpeg_done_event_t *evt)
+{
+
+    ESP_LOGI(TAG,"closing");
+    http_close();
+ //   (void)evt;
 }
 
 /* ============================================================
@@ -317,7 +321,7 @@ void app_main(void)
         NULL
     );
 
-    http_close();
+    
 
     esp_log_level_set("*", ESP_LOG_WARN);
     ESP_LOGI(TAG, "Done — %d bytes from HTTP", http_ctx.bytes_total);
