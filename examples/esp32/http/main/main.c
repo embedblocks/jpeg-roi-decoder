@@ -308,8 +308,8 @@ void app_main(void)
     view.chunk_buffer = chunk_buf;
     view.input_buffer = input_buf;
     view.scale        = JPEG_SCALE_AUTO;
-    view.pan_x        = -100;
-    view.pan_y        = -100;
+    view.pan_x        = +200;
+    view.pan_y        = +200;
     view.reader       = (jpeg_reader_t){
         .cb  = http_read_cb,
         .ctx = &http_ctx,
