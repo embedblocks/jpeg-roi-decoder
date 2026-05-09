@@ -1,5 +1,5 @@
 
-version: "0.3.0"
+version: "0.4.0"
 description: >
   Region-of-interest JPEG decoder for ESP32. Stream JPEG data in from any source,
   stream decoded pixel rows out to your callback — without loading the full image into RAM,

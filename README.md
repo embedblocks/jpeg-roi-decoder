@@ -41,14 +41,14 @@ queue, a TCP socket, or a DMA ring buffer. If you can hand bytes to a callback, 
 ## Installation
 
 ```bash
-idf.py add-dependency "jpeg_roi_decoder^0.3.0"
+idf.py add-dependency "jpeg_roi_decoder^0.4.0"
 ```
 
 Or in `idf_component.yml`:
 
 ```yaml
 dependencies:
-  jpeg_roi_decoder: "^0.3.0"
+  jpeg_roi_decoder: "^0.4.0"
 ```
 
 ---
