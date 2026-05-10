@@ -1,6 +1,6 @@
 # HTTPS Streaming JPEG Decoder — ESP32 Example
 
-Streams a JPEG image over HTTPS and decodes it in a single forward pass, sending
+Fetches a JPEG image over HTTPS and decodes it in a single forward pass, sending
 each completed pixel row to a host PC over UART. No full-image buffer is ever
 allocated — pixel rows flow from socket to display line by line.
 
@@ -41,14 +41,16 @@ uses 16 KB regardless of image size.
 
 ## The input prefetch buffer
 
-TJpgDec parses JPEG headers with many small reads — 1, 4, 14, 65 bytes at a time.
-Over HTTP each such call would be a blocking socket read, which firewalls and CDNs
-treat as a malicious scan pattern.
+TJpgDec parses JPEG headers with many small internal reads — 1, 4, 14, 65 bytes
+at a time. For an in-memory source this costs nothing. Over HTTPS, each of those
+calls goes through `esp_http_client_read` → TLS decrypt → `recv()` syscall. During
+header parsing alone the decoder makes 15–25 such calls, each carrying full TLS
+stack overhead.
 
-`view.input_buffer` solves this transparently inside the decoder component. When
-set, `input_func` always fetches `JPEG_INPUT_BUF_SIZE` bytes from the source in
-one call, serving TJpgDec's small requests from an internal buffer. The HTTP layer
-only ever sees large, aligned reads.
+`view.input_buffer` solves this. When set, `input_func` always fetches
+`JPEG_INPUT_BUF_SIZE` bytes from the source in one call and serves TJpgDec's
+small requests from that buffer. The TLS stack sees only large, aligned reads;
+header parse time drops from many small round-trips to one or two.
 
 ```c
 view.input_buffer = input_buf;   // one line — that is the entire change
@@ -71,7 +73,9 @@ bytes arrived. Partial reads are valid — the decoder retries internally.
 
 When `dst == NULL` the decoder wants to skip forward past bytes it does not need
 (unknown EXIF blocks, padding). HTTP is not seekable, so the callback reads and
-discards into a small stack buffer rather than calling `fseek`.
+discards into a small stack buffer rather than calling `fseek`. With
+`input_buffer` set this path is rarely hit — skips are handled inside the prefetch
+buffer without touching the HTTP client at all.
 
 ---
 
@@ -98,6 +102,22 @@ safe place to release reader resources.
 
 ---
 
+## `esp_http_client_set_timeout_ms`
+
+The `timeout_ms` field in `esp_http_client_config_t` applies to the connection
+phase. For the manual `open → fetch_headers → read` pattern, call
+`esp_http_client_set_timeout_ms` explicitly after open to ensure the per-read
+socket timeout is enforced:
+
+```c
+esp_http_client_set_timeout_ms(http_ctx.client, 10000);
+```
+
+Without this, a server that stops sending mid-stream will block
+`esp_http_client_read` indefinitely and `on_done` will never fire.
+
+---
+
 ## UART sync protocol
 
 Before sending pixel data the firmware synchronises with the host:
@@ -121,19 +141,17 @@ then switches baud rate to 921600 and transmits the header.
 ## Configuration
 
 ```c
-#define LCD_W       320     // output width  (pixels)
-#define LCD_H       240     // output height (pixels)
+#define LCD_W       320
+#define LCD_H       240
 #define JPEG_URL    "https://i.gzn.jp/img/2009/06/18/lenna/000.jpg"
-#define DEBUG       1       // 1 = skip UART, log to console only
+#define DEBUG       1   // 1 = skip UART, log to console only
 ```
 
 `JPEG_INPUT_BUF_SIZE` (default 2048) is defined in `jpeg_roi_decoder.h` and can
 be overridden per-project:
 
 ```cmake
-target_compile_definitions(${COMPONENT_TARGET} PRIVATE
-    JPEG_INPUT_BUF_SIZE=4096
-)
+target_compile_definitions(${COMPONENT_TARGET} PRIVATE JPEG_INPUT_BUF_SIZE=4096)
 ```
 
 ---
@@ -142,7 +160,7 @@ target_compile_definitions(${COMPONENT_TARGET} PRIVATE
 
 ```bash
 idf.py set-target esp32
-idf.py menuconfig          # set WiFi SSID / password under Example Connection
+idf.py menuconfig   # set WiFi SSID / password under Example Connection
 idf.py build flash monitor
 ```
 
@@ -151,25 +169,13 @@ Requires ESP-IDF v5.x. The `example_connect` helper comes from
 
 ---
 
-## Known issues and notes
+## Notes
 
-**mbedTLS debug logging and stack size.** Enabling verbose mbedTLS logging
-(`CONFIG_MBEDTLS_DEBUG=y`) adds several kilobytes of stack usage per TLS read due
-to the logging call frames. The decoder worker task must be at least 16 KB with
-debug enabled. Without debug 8–12 KB is sufficient.
+**Worker task stack size.** The full call depth over HTTPS is deep: decoder →
+`input_func` → `http_read_cb` → `esp_http_client_read` → TLS → `mbedtls_ssl_read`.
+Set the worker task stack to at least 16 KB. With mbedTLS debug logging enabled,
+increase further — each log line adds call-frame depth inside the TLS stack.
 
 **HTTP resource lifetime.** The `http_ctx` handle must not be closed or modified
 from any task other than the decoder worker after `jpeg_decoder_decode_view` is
 called. All cleanup belongs in `on_done`.
-
-**`esp_http_client_set_timeout_ms`.** The `timeout_ms` field in
-`esp_http_client_config_t` applies to the connection phase. For the manual
-`open → fetch_headers → read` pattern, call `esp_http_client_set_timeout_ms`
-explicitly after open to ensure the per-read socket timeout is set:
-
-```c
-esp_http_client_set_timeout_ms(http_ctx.client, 10000);
-```
-
-Without this, a server that stops sending mid-stream will block `esp_http_client_read`
-indefinitely and `on_done` will never fire.
