@@ -1,4 +1,4 @@
-# HTTP Streaming JPEG Decoder — ESP32 Example
+# HTTPS Streaming JPEG Decoder — ESP32 Example
 
 Streams a JPEG image over HTTPS and decodes it in a single forward pass, sending
 each completed pixel row to a host PC over UART. No full-image buffer is ever
