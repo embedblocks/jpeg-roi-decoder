@@ -352,7 +352,14 @@ jpeg_decoder_decode(&req);
 ## Examples
 
 * `examples/uart` — Flash-embedded JPEG decoded and streamed over UART to a PC receiver script
-* `examples/https` — JPEG fetched live over HTTPS and decoded in a single streaming pass; demonstrates `input_buffer` and correct HTTP resource lifetime
+* `examples/http` — JPEG fetched live over HTTPS and decoded in a single streaming pass;
+  demonstrates `input_buffer` and correct HTTP resource lifetime
+
+  ![Lenna](https://i.gzn.jp/img/2009/06/18/lenna/000.jpg)
+
+  *512 × 512 px JPEG (~32 KB) streamed from a live HTTPS endpoint, decoded on-chip,
+  and rendered pixel-row by pixel-row.*
+
 * `examples/sdcard` — JPEG read from SD card, decoded RGB565 written back to SD card
 
 ---
