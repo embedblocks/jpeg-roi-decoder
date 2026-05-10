@@ -2,36 +2,50 @@
 ---
 ## [0.4.0] - 2026-05-09
 ### Added
-- **Input prefetch buffer** — new optional `input_buffer` field on `jpeg_view_intent_t` and `jpeg_decode_request_t`. When set, `input_func` reads from the source exclusively in `JPEG_INPUT_BUF_SIZE`-byte chunks and serves TJpgDec's small internal requests (1, 4, 14, 65 bytes during header parse) from that buffer. The caller's callback never sees reads smaller than one full chunk. Transport layers — HTTP, HTTPS, TCP, UART — only ever receive large, aligned reads, preventing the rapid-fire small-request pattern that firewalls and CDNs treat as malicious.
-- `JPEG_INPUT_BUF_SIZE` — compile-time constant (default 2048 bytes) controlling the prefetch chunk size. Override per-project: `target_compile_definitions(... PRIVATE JPEG_INPUT_BUF_SIZE=4096)`.
-- `JPEG_INPUT_BUF_SIZE` sizing rationale: 2048 bytes covers most JFIF and Exif JPEG headers in a single refill. For images with embedded XMP or large ICC profiles, increase accordingly.
+- **Input prefetch buffer** — new optional `input_buffer` field on `jpeg_view_intent_t` and
+  `jpeg_decode_request_t`. When set, `input_func` reads from the source exclusively in
+  `JPEG_INPUT_BUF_SIZE`-byte chunks and serves TJpgDec's small internal requests (1, 4, 14,
+  65 bytes during header parsing) from that buffer.
+
+  TJpgDec makes 15–25 `reader.cb` calls during header parsing alone. For sources where each
+  call has non-trivial overhead — HTTP (TLS stack + `recv()` syscall), sockets, UART, FreeRTOS
+  queues — batching those into one or two chunk-sized calls measurably reduces header parse
+  time and overall callback pressure. For in-memory and file sources the overhead is negligible
+  and `input_buffer` should be left `NULL`.
+
+- `JPEG_INPUT_BUF_SIZE` — compile-time constant (default 2048 bytes) controlling the prefetch
+  chunk size. 2048 bytes covers most JFIF and Exif headers in a single refill. Override
+  per-project: `target_compile_definitions(... PRIVATE JPEG_INPUT_BUF_SIZE=4096)`.
 
 ### Changed
-- `input_func` now has two paths: the original zero-copy direct path (when `input_buffer == NULL`) and the new prefetch buffer path (when `input_buffer` is set). The direct path is entirely unchanged — no performance regression for file and buffer sources.
-- Skip requests (`dst == NULL` from TJpgDec) are handled inside the prefetch buffer when `input_buffer` is set: bytes are drained from the buffer and discarded, refilling from the source as needed. The caller's callback always receives a real destination pointer — it never needs to handle `dst == NULL` for non-seekable sources.
-- `jpeg_view_default()` zero-initialises `input_buffer` to `NULL` (direct pass-through). Existing callers require no changes.
-- `decode_job_t` internal type: `raw` union carries `input_buffer` pointer so the RTOS worker correctly propagates it to `jpeg_decoder_core_run_request`.
+- `input_func` now has two paths: the original zero-copy direct path when `input_buffer == NULL`,
+  and the new prefetch path when `input_buffer` is set. The direct path is entirely unchanged —
+  no performance impact for file and buffer sources.
+- Skip requests (`dst == NULL` from TJpgDec) are handled inside the prefetch buffer without
+  calling the source with a NULL destination. The caller's callback always receives a real
+  pointer — non-seekable sources need no special skip handling.
+- `jpeg_view_default()` zero-initialises `input_buffer` to `NULL`. Existing callers are
+  unaffected.
+- `decode_job_t` internal type: `raw` union carries `input_buffer` so the RTOS worker
+  correctly propagates it through `jpeg_decoder_core_run_request`.
 
 ### Not changed
-- Public API signatures for `jpeg_decoder_decode_view()` and `jpeg_decoder_decode()` are unchanged.
-- `jpeg_reader_t`, `jpeg_view_intent_t` (other fields), `jpeg_decode_request_t` (other fields) are unchanged except for the new `input_buffer` field.
-- Default behaviour (`input_buffer = NULL`) is identical to 0.3.x — no migration required for existing callers.
+- Public API signatures for `jpeg_decoder_decode_view()` and `jpeg_decoder_decode()`.
+- Default behaviour (`input_buffer = NULL`) is identical to 0.3.x. No migration required.
 
 ### Migration from 0.3.x
 
-No breaking changes. To opt in to the prefetch buffer for HTTP or other non-seekable sources:
+No breaking changes. To opt in for HTTP or other high-overhead sources:
 
 ```c
-/* 0.3.x — unchanged, still valid */
-static uint8_t  workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
-static uint16_t chunk_buf[JPEG_CHUNK_BUF_PIXELS(LCD_W)];
+/* add one buffer */
+static uint8_t input_buf[JPEG_INPUT_BUF_SIZE];
 
-/* 0.4.0 — add these two lines for HTTP/socket sources */
-static uint8_t  input_buf[JPEG_INPUT_BUF_SIZE];
+/* add one assignment */
 view.input_buffer = input_buf;
 ```
 
-File, buffer, and PSRAM sources: leave `input_buffer = NULL`. The direct path is faster for local memory.
+Leave `input_buffer = NULL` for file, buffer, and PSRAM sources.
 
 ---
 ## [0.3.0] - 2026-05-02
