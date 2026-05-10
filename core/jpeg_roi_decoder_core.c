@@ -46,6 +46,8 @@ jpeg_view_intent_t jpeg_view_default(uint16_t lcd_width, uint16_t lcd_height)
         .out_format   = JPEG_OUTPUT_RGB565,
         .reader       = { .cb = NULL, .ctx = NULL },
         .chunk_buffer = NULL,   /* caller must set before decoding */
+        .input_buffer = NULL,   /* optional — only for sources such as HTTP where server
+                                who can close connections on small request by tjpgd during header stage*/
     };
 }
 
