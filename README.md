@@ -4,7 +4,7 @@
 ![Espressif Component Registry](https://img.shields.io/badge/Espressif-Component%20Registry-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Region-of-interest JPEG decoder for ESP32. Stream JPEG data in from any source,
+Streaming region-of-interest JPEG decoder for ESP32. Stream JPEG data in from any source,
 stream decoded pixel rows out to your callback — without loading the full image into RAM,
 without a seekable source, without a full-frame output buffer.
 
@@ -248,6 +248,7 @@ jpeg_decoder_decode(&req);
 * `examples/uart` — Flash-embedded JPEG decoded and streamed over UART; `image_rcv.py` displays it on the PC
 * `examples/sdcard` — JPEG read from SD card, decoded RGB565 written back to SD card
 
+* `examples/https` — JPEG streamed in from https webserver, decoded RGB565 and streamed over UART.    `image_rcv.py` displays it on the PC
 ---
 
 ## Buffer Lifetime
