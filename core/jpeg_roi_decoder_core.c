@@ -46,6 +46,8 @@ jpeg_view_intent_t jpeg_view_default(uint16_t lcd_width, uint16_t lcd_height)
         .out_format   = JPEG_OUTPUT_RGB565,
         .reader       = { .cb = NULL, .ctx = NULL },
         .chunk_buffer = NULL,   /* caller must set before decoding */
+        .input_buffer = NULL,   /* optional — only for sources such as HTTP where server
+                                who can close connections on small request by tjpgd during header stage*/
     };
 }
 
@@ -82,14 +84,51 @@ static size_t input_func(JDEC *jd, uint8_t *buf, size_t nbyte)
     decode_context_t *ctx = (decode_context_t *)jd->device;
     size_t total = 0;
 
+    /* ---- Direct pass-through (no prefetch buffer) ---- */
+    if (!ctx->input_buf) {
+        while (total < nbyte) {
+            size_t got = ctx->reader.cb(buf ? buf + total : NULL,
+                                        nbyte - total,
+                                        ctx->reader.ctx);
+            if (got == 0)
+                break;
+            total += got;
+        }
+        return total;
+    }
+
+    /* ---- Prefetch buffer path ----
+     *
+     * reader.cb is always called with a real dst pointer (never NULL),
+     * so non-seekable sources (HTTP, UART) are handled correctly.
+     *
+     * When buf == NULL (TJpgDec skip request), we drain bytes from the
+     * prefetch buffer without copying, then refill and drain again as
+     * needed — consuming and discarding bytes without any fseek.
+     */
     while (total < nbyte) {
-        /* Pass buf directly (zero copy) or NULL (skip fast-path). */
-        size_t got = ctx->reader.cb(buf ? buf + total : NULL,
-                                    nbyte - total,
-                                    ctx->reader.ctx);
-        if (got == 0)
-            break;   /* source ended or timed out */
-        total += got;
+        size_t avail = ctx->input_buf_len - ctx->input_buf_pos;
+
+        if (avail == 0) {
+            /* Buffer empty — pull one full chunk from the source */
+            ctx->input_buf_pos = 0;
+            ctx->input_buf_len = 0;
+            size_t got = ctx->reader.cb(ctx->input_buf, JPEG_INPUT_BUF_SIZE,
+                                        ctx->reader.ctx);
+            if (got == 0)
+                break;   /* EOF or transport error */
+            ctx->input_buf_len = got;
+            avail = got;
+        }
+
+        size_t n = (nbyte - total) < avail ? (nbyte - total) : avail;
+
+        if (buf)
+            memcpy(buf + total, ctx->input_buf + ctx->input_buf_pos, n);
+        /* buf == NULL: skip — advance cursor only, no copy */
+
+        ctx->input_buf_pos += n;
+        total              += n;
     }
     return total;
 }
@@ -266,6 +305,9 @@ jpeg_decoder_core_run_view(
         .done_cb             = done_cb,
         .user_data           = user_data,
         .abort               = false,
+        .input_buf           = intent->input_buffer,   /* NULL = direct pass-through */
+        .input_buf_len       = 0,
+        .input_buf_pos       = 0,
     };
     memset(ctx.row_fill_count, 0, sizeof(ctx.row_fill_count));
     memset(ctx.row_flushed,    0, sizeof(ctx.row_flushed));
@@ -388,6 +430,9 @@ jpeg_decoder_core_run_request(const jpeg_decode_request_t *req)
         .done_cb             = req->done_callback,
         .user_data           = req->user_data,
         .abort               = false,
+        .input_buf           = req->input_buffer,      /* NULL = direct pass-through */
+        .input_buf_len       = 0,
+        .input_buf_pos       = 0,
     };
     memset(ctx.row_fill_count, 0, sizeof(ctx.row_fill_count));
     memset(ctx.row_flushed,    0, sizeof(ctx.row_flushed));

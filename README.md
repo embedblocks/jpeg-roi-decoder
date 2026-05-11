@@ -4,7 +4,7 @@
 ![Espressif Component Registry](https://img.shields.io/badge/Espressif-Component%20Registry-orange)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-Region-of-interest JPEG decoder for ESP32. Stream JPEG data in from any source,
+Streaming region-of-interest JPEG decoder for ESP32 based on tjpgd. Stream JPEG data in from any source,
 stream decoded pixel rows out to your callback — without loading the full image into RAM,
 without a seekable source, without a full-frame output buffer.
 
@@ -21,7 +21,8 @@ queue, a TCP socket, or a DMA ring buffer. If you can hand bytes to a callback, 
 * **LCD-aware high-level API** — give it your display size, it handles scale, centering, and pan
 * **Automatic scale selection** — `JPEG_SCALE_AUTO` picks the best 1/1, 1/2, 1/4, or 1/8 fit
 * **RGB565 and RGB888 output**
-* **Zero heap allocation** — work buffer and chunk buffer are caller-supplied
+* **Zero heap allocation** — work buffer, chunk buffer, and input buffer are all caller-supplied
+* **Optional input prefetch buffer** — batches the decoder's many small internal reads into fewer large chunk-sized calls, reducing per-call overhead for sources where each callback invocation is expensive (HTTP, socket, UART, queue)
 * **FreeRTOS async** — enqueue a job and return; decode runs in a dedicated worker task
 * **Synchronous path** — for bare-metal builds and host-side testing
 
@@ -31,10 +32,10 @@ queue, a TCP socket, or a DMA ring buffer. If you can hand bytes to a callback, 
 
 | Chip | Status |
 |---|---|
-| ESP32 | ✅ Tested |
-| ESP32-S3 | ⚠️ Expected to work |
-| ESP32-S2 | ⚠️ Expected to work |
-| ESP32-C3 | ⚠️ Expected to work |
+| ESP32 | Tested |
+| ESP32-S3 | Expected to work |
+| ESP32-S2 | Expected to work |
+| ESP32-C3 | Expected to work |
 
 ---
 
@@ -59,15 +60,15 @@ The decoder runs a single forward pass through the JPEG byte stream:
 
 ```
 your callback feeds bytes
-        ↓
-   header parse          ← image dimensions become known here
-        ↓
-   scale resolution      ← JPEG_SCALE_AUTO picks best fit
-        ↓
-   ROI computation       ← centered, panned, clamped
-        ↓
-   pixel decode          ← your on_chunk() fires once per row
-        ↓
+        |
+   header parse          <- image dimensions become known here
+        |
+   scale resolution      <- JPEG_SCALE_AUTO picks best fit
+        |
+   ROI computation       <- centered, panned, clamped
+        |
+   pixel decode          <- your on_chunk() fires once per row
+        |
    on_done()
 ```
 
@@ -76,7 +77,7 @@ queues — work just as well as files and buffers.
 
 ---
 
-## Source Abstraction — `jpeg_reader_t`
+## Source Abstraction — jpeg_reader_t
 
 The complete input contract is one function signature:
 
@@ -102,7 +103,7 @@ The component stores the pointer and calls it. All source state lives in `ctx` �
 
 ### Example callbacks
 
-#### `FILE*` — SD card, SPIFFS, LittleFS
+#### FILE* — SD card, SPIFFS, LittleFS
 
 ```c
 size_t file_read_cb(uint8_t *dst, size_t max, void *ctx)
@@ -112,8 +113,6 @@ size_t file_read_cb(uint8_t *dst, size_t max, void *ctx)
         return fseek(fp, (long)max, SEEK_CUR) == 0 ? max : 0;
     return fread(dst, 1, max, fp);
 }
-
-jpeg_reader_t reader = { .cb = file_read_cb, .ctx = fp };
 ```
 
 #### Flash blob or any buffer in RAM / PSRAM
@@ -155,12 +154,94 @@ HTTP, TCP, UART, DMA ring buffer — same pattern every time. Write your callbac
 
 ---
 
+## Input Prefetch Buffer (optional)
+
+### The problem
+
+TJpgDec parses JPEG headers with many small internal reads — 1, 4, 14, 65 bytes at a time.
+For in-memory and file sources this costs nothing. For sources where each `reader.cb`
+invocation has overhead, it adds up:
+
+| Source | Per-call cost |
+|---|---|
+| RAM / flash buffer | `memcpy` — negligible |
+| `FILE*` on SD / SPIFFS | filesystem layer — small |
+| HTTP / HTTPS | `esp_http_client_read` → TLS → `recv()` syscall |
+| TCP socket | `recv()` syscall + kernel buffer management |
+| UART | `uart_read_bytes` + driver overhead |
+| FreeRTOS queue | `xQueueReceive` + scheduler check per byte |
+
+During header parsing alone the decoder makes 15–25 `reader.cb` calls. On an HTTP source
+each of those is a round-trip through the TLS stack. Batching them into one or two
+chunk-sized calls reduces that overhead significantly and keeps header parse time short.
+
+### The solution
+
+Set `view.input_buffer` to a caller-allocated byte array. The component then reads from
+your source exclusively in `JPEG_INPUT_BUF_SIZE`-byte chunks, serving TJpgDec's small
+internal requests from that buffer. Your callback sees far fewer, larger calls.
+
+```c
+static uint8_t input_buf[JPEG_INPUT_BUF_SIZE];   // 2048 bytes, lives in .bss
+
+view.input_buffer = input_buf;
+```
+
+Setting `input_buffer = NULL` (the default from `jpeg_view_default`) restores the original
+zero-copy direct path — correct and efficient for file and buffer sources.
+
+### When to use it
+
+| Source type | `input_buffer` | Reason |
+|---|---|---|
+| Flash blob / RAM buffer | `NULL` | Per-call cost is negligible |
+| `FILE*` on SD / SPIFFS | `NULL` | Filesystem handles its own buffering |
+| HTTP / HTTPS | **Set** | Each call traverses TLS stack + syscall |
+| TCP socket | **Set** | Each call is a `recv()` syscall |
+| UART | **Set** | Driver overhead per call |
+| FreeRTOS queue | **Set** | Scheduler overhead per dequeue |
+
+### Sizing
+
+`JPEG_INPUT_BUF_SIZE` defaults to 2048 bytes, which covers most JFIF and Exif headers in a
+single refill. Override per-project via CMake:
+
+```cmake
+target_compile_definitions(${COMPONENT_TARGET} PRIVATE JPEG_INPUT_BUF_SIZE=4096)
+```
+
+### Skip handling
+
+When TJpgDec skips over unknown JPEG markers it calls `input_func` with `dst = NULL`.
+In the buffered path the component drains and discards bytes from the prefetch buffer,
+refilling from your callback as needed. Your callback always receives a real destination
+pointer — it never needs to handle `dst = NULL` for non-seekable sources.
+
+---
+
+## Buffer Sizing Macros
+
+```c
+/* Output chunk buffer — one MCU row band */
+#define JPEG_MCU_MAX_HEIGHT        16u
+#define JPEG_CHUNK_BUF_PIXELS(w)   ((w) * JPEG_MCU_MAX_HEIGHT)
+#define JPEG_CHUNK_BUF_BYTES(w)    (JPEG_CHUNK_BUF_PIXELS(w) * sizeof(uint16_t))
+
+/* Input prefetch buffer — optional, for sources with per-call overhead */
+#ifndef JPEG_INPUT_BUF_SIZE
+#define JPEG_INPUT_BUF_SIZE        2048u
+#endif
+
+/* Work buffer — TJpgDec internal scratch */
+#define JPEG_DECODER_WORK_BUF_MIN      3096U
+#define JPEG_DECODER_WORK_BUF_DEFAULT  4096U
+```
+
+---
+
 ## Usage
 
-### High-level API
-
-Give the decoder your LCD dimensions. It parses the header, picks the best scale,
-centers the image, applies your pan offset, and calls `on_chunk` once per completed row.
+### High-level API — file or buffer source
 
 ```c
 #include "jpeg_roi_decoder.h"
@@ -170,7 +251,6 @@ static uint16_t chunk_buf[JPEG_CHUNK_BUF_PIXELS(320)];
 
 static bool on_chunk(const jpeg_chunk_event_t *evt)
 {
-    /* evt->pixels is valid only during this call */
     my_lcd_write_row(evt->y, evt->pixels, evt->byte_count);
     return true;   /* return false to abort */
 }
@@ -187,7 +267,7 @@ void display_jpeg_from_sdcard(FILE *fp)
     view.reader       = (jpeg_reader_t){ .cb = file_read_cb, .ctx = fp };
     view.chunk_buffer = chunk_buf;
     view.scale        = JPEG_SCALE_AUTO;
-    /* view.pan_x = 40; view.pan_y = -20; */   /* optional */
+    /* input_buffer left NULL — file sources handle buffering themselves */
 
     jpeg_decoder_decode_view(
         &view,
@@ -197,13 +277,38 @@ void display_jpeg_from_sdcard(FILE *fp)
 }
 ```
 
-### Using a flash-embedded image (no filesystem, no `FILE*`)
+### High-level API — HTTP or high-overhead source
+
+Add one buffer declaration and one assignment. Everything else is identical.
+
+```c
+static uint8_t  workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
+static uint16_t chunk_buf[JPEG_CHUNK_BUF_PIXELS(320)];
+static uint8_t  input_buf[JPEG_INPUT_BUF_SIZE];        /* reduces TLS stack overhead */
+
+void display_jpeg_from_http(http_stream_ctx_t *http_ctx)
+{
+    jpeg_view_intent_t view = jpeg_view_default(320, 240);
+    view.reader       = (jpeg_reader_t){ .cb = http_read_cb, .ctx = http_ctx };
+    view.chunk_buffer = chunk_buf;
+    view.input_buffer = input_buf;   /* batch small reads into chunk-sized calls */
+    view.scale        = JPEG_SCALE_AUTO;
+
+    jpeg_decoder_decode_view(
+        &view,
+        workbuf, sizeof(workbuf),
+        on_chunk, on_done, NULL
+    );
+}
+```
+
+### Using a flash-embedded image
 
 ```c
 extern const uint8_t img_start[] asm("_binary_splash_jpg_start");
 extern const uint8_t img_end[]   asm("_binary_splash_jpg_end");
 
-static buf_ctx_t img_ctx;   /* static — must outlive the decode job */
+static buf_ctx_t img_ctx;
 
 void display_splash(void)
 {
@@ -235,6 +340,7 @@ jpeg_decode_request_t req = {
     .work_buffer_size    = sizeof(workbuf),
     .chunk_buffer        = chunk_buf,
     .chunk_buffer_pixels = JPEG_CHUNK_BUF_PIXELS(480),
+    .input_buffer        = NULL,   /* set to input_buf for HTTP/socket sources */
     .chunk_callback      = on_chunk,
     .done_callback       = on_done,
 };
@@ -245,7 +351,15 @@ jpeg_decoder_decode(&req);
 
 ## Examples
 
-* `examples/uart` — Flash-embedded JPEG decoded and streamed over UART; `image_rcv.py` displays it on the PC
+* `examples/uart` — Flash-embedded JPEG decoded and streamed over UART to a PC receiver script
+* `examples/http` — JPEG fetched live over HTTPS and decoded in a single streaming pass;
+  demonstrates `input_buffer` and correct HTTP resource lifetime
+
+  ![Lenna](https://i.gzn.jp/img/2009/06/18/lenna/000.jpg)
+
+  *512 × 512 px JPEG (~32 KB) streamed from a live HTTPS endpoint, decoded on-chip,
+  and rendered pixel-row by pixel-row.*
+
 * `examples/sdcard` — JPEG read from SD card, decoded RGB565 written back to SD card
 
 ---
@@ -253,28 +367,30 @@ jpeg_decoder_decode(&req);
 ## Buffer Lifetime
 
 `jpeg_decoder_decode_view()` and `jpeg_decoder_decode()` return immediately on the RTOS path —
-the worker task decodes in the background. Three things must remain valid until `done_callback` fires:
+the worker task decodes in the background. Four things must remain valid until `done_callback` fires:
 
 | | Must stay valid until |
 |---|---|
 | `work_buffer` | `done_callback` |
 | `chunk_buffer` | `done_callback` |
+| `input_buffer` (if set) | `done_callback` |
 | `reader.ctx` and everything it points to | `done_callback` |
 
-Declaring all three as `static` is the simplest correct choice on embedded targets.
+Declaring all as `static` is the simplest correct choice on embedded targets.
 
-**If your source is a `FILE*`:** do not call `fclose()` after `decode_view` returns.
-The worker task is still calling `fread()` on it. Close the file inside `on_done` — that is the only safe point.
+**If your source owns a connection** (FILE*, HTTP client, socket): do not close it after
+`decode_view` returns. The worker task is still calling your callback. Close the resource
+inside `on_done` — that is the correct and only safe point.
 
 ```c
-/* ✅ correct */
+/* correct — resource closed from on_done */
 static void on_done(const jpeg_done_event_t *evt) {
-    fclose(((my_ctx_t *)evt->user_data)->fin);
+    http_close();
 }
 
-/* ❌ crash — worker still reading */
-jpeg_decoder_decode_view(...);
-fclose(fin);
+/* crash — worker task still reading when main task closes the connection */
+jpeg_decoder_decode_view(...);   /* returns immediately on RTOS path */
+http_close();                    /* races with worker task */
 ```
 
 ---
@@ -298,12 +414,17 @@ On the **synchronous path**, the return value is the decode result directly.
 
 ## Notes
 
-**Scale is discrete.** TJpgDec supports `1/1`, `1/2`, `1/4`, `1/8` only. `JPEG_SCALE_AUTO` picks
+**`input_buffer` is optional and source-dependent.** File, buffer, and PSRAM sources should
+leave it `NULL` — the zero-copy direct path is faster for local memory. Set it for sources
+where each `reader.cb` call carries non-trivial overhead: HTTP, sockets, UART, queues.
+
+**Scale is discrete.** TJpgDec supports 1/1, 1/2, 1/4, 1/8 only. `JPEG_SCALE_AUTO` picks
 the smallest factor where the scaled image is at least as large as the LCD. Use a fixed value
 if you need predictable output dimensions.
 
-**Pan is in LCD pixels.** `pan_x` / `pan_y` shift the viewport in output pixel units, independent
-of scale. `(0, 0)` centers the image. Values that push outside the image are clamped automatically.
+**Pan is in LCD pixels.** `pan_x` / `pan_y` shift the viewport in output pixel units,
+independent of scale. `(0, 0)` centers the image. Values that push outside the image are
+clamped automatically.
 
 **`chunk_callback` must return quickly.** It runs inside the worker task. Blocking on UART TX,
 SPI, or a display driver stalls the entire decode pipeline. For slow peripherals, enqueue the
