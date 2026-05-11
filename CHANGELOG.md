@@ -1,9 +1,54 @@
 # Changelog
+---
+## [0.4.0] - 2026-05-09
+### Added
+- **Input prefetch buffer** — new optional `input_buffer` field on `jpeg_view_intent_t` and
+  `jpeg_decode_request_t`. When set, `input_func` reads from the source exclusively in
+  `JPEG_INPUT_BUF_SIZE`-byte chunks and serves TJpgDec's small internal requests (1, 4, 14,
+  65 bytes during header parsing) from that buffer.
+
+  TJpgDec makes 15–25 `reader.cb` calls during header parsing alone. For sources where each
+  call has non-trivial overhead — HTTP (TLS stack + `recv()` syscall), sockets, UART, FreeRTOS
+  queues — batching those into one or two chunk-sized calls measurably reduces header parse
+  time and overall callback pressure. For in-memory and file sources the overhead is negligible
+  and `input_buffer` should be left `NULL`.
+
+- `JPEG_INPUT_BUF_SIZE` — compile-time constant (default 2048 bytes) controlling the prefetch
+  chunk size. 2048 bytes covers most JFIF and Exif headers in a single refill. Override
+  per-project: `target_compile_definitions(... PRIVATE JPEG_INPUT_BUF_SIZE=4096)`.
+
+### Changed
+- `input_func` now has two paths: the original zero-copy direct path when `input_buffer == NULL`,
+  and the new prefetch path when `input_buffer` is set. The direct path is entirely unchanged —
+  no performance impact for file and buffer sources.
+- Skip requests (`dst == NULL` from TJpgDec) are handled inside the prefetch buffer without
+  calling the source with a NULL destination. The caller's callback always receives a real
+  pointer — non-seekable sources need no special skip handling.
+- `jpeg_view_default()` zero-initialises `input_buffer` to `NULL`. Existing callers are
+  unaffected.
+- `decode_job_t` internal type: `raw` union carries `input_buffer` so the RTOS worker
+  correctly propagates it through `jpeg_decoder_core_run_request`.
+
+### Not changed
+- Public API signatures for `jpeg_decoder_decode_view()` and `jpeg_decoder_decode()`.
+- Default behaviour (`input_buffer = NULL`) is identical to 0.3.x. No migration required.
+
+### Migration from 0.3.x
+
+No breaking changes. To opt in for HTTP or other high-overhead sources:
+
+```c
+/* add one buffer */
+static uint8_t input_buf[JPEG_INPUT_BUF_SIZE];
+
+/* add one assignment */
+view.input_buffer = input_buf;
+```
+
+Leave `input_buffer = NULL` for file, buffer, and PSRAM sources.
 
 ---
-
 ## [0.3.0] - 2026-05-02
-
 ### Added
 - **True streaming input** — decoder now runs a single forward pass through the JPEG byte stream. The source never rewinds. Non-seekable sources (HTTP, UART, TCP, FreeRTOS queue, DMA ring buffer) are now fully supported.
 - `jpeg_read_cb_t` — new read callback typedef: `size_t (*)(uint8_t *dst, size_t max, void *ctx)`. This is the sole source abstraction. When `dst` is `NULL`, the decoder is requesting a skip; seekable sources can implement this as `fseek` (zero RAM, zero copy).
@@ -43,15 +88,11 @@
 | `jpeg_decode_request_t.source` | `jpeg_decode_request_t.reader` |
 
 ---
-
 ## [0.2.0] - 2026-04-04
-
 ### Fix
 - UART example fixed, now correctly received
 
 ---
-
 ## [0.1.0] - 2026-04-04
-
 ### Release
 - First release

@@ -5,6 +5,7 @@ dist/
 .github/
 managed_components/
 sdkconfig
+sdkconfig.old
 *.png
 *.raw
 graveyard/

@@ -22,6 +22,9 @@ extern const uint8_t test_jpg_end[]   asm("_binary_test_image_jpg_end");
 static uint8_t  workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
 static uint16_t chunk_buf[JPEG_CHUNK_BUF_PIXELS(LCD_W)];
 
+//Input buffer not needed for local read
+//static uint8_t  input_buf[JPEG_INPUT_BUF_SIZE];
+
 typedef struct {
     uint8_t  sync[3];     // 0xAA 0xAA 0xAA - sync pattern
     uint32_t magic;       // 0xDEADBEEF
@@ -47,6 +50,8 @@ static size_t buf_read_cb(uint8_t *dst, size_t max, void *vctx)
     buf_ctx_t *bc = vctx;
     size_t avail  = bc->len - bc->pos;
     size_t n      = max < avail ? max : avail;
+    ESP_LOGI(TAG, "buf_read_cb: pos %zu, avail %zu, req %zu, read %zu",
+             bc->pos, avail, max, n);
     if (dst)
         memcpy(dst, bc->data + bc->pos, n);
     bc->pos += n;   /* advance even on skip (dst == NULL) */

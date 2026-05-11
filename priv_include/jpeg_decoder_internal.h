@@ -12,6 +12,14 @@
 typedef struct {
     jpeg_reader_t        reader;      /* cb + ctx, no other source state */
 
+    /* Input prefetch buffer — NULL when not used (direct pass-through).
+     * Owned and allocated by the caller; sized JPEG_INPUT_BUF_SIZE bytes.
+     * input_buf_len / input_buf_pos track the fill level and read cursor.
+     * Both are zeroed at context init; only input_func ever modifies them. */
+    uint8_t *input_buf;
+    size_t   input_buf_len;
+    size_t   input_buf_pos;
+
     jpeg_roi_t           roi;         /* in scaled (output) coords after prepare */
     jpeg_decode_scale_t  scale;
     jpeg_output_format_t out_format;
@@ -55,6 +63,7 @@ typedef struct {
             jpeg_output_format_t out_format;
             uint16_t            *chunk_buffer;
             size_t               chunk_buffer_pixels;
+            uint8_t             *input_buffer;   /* JPEG_INPUT_BUF_SIZE bytes, or NULL */
         } raw;                       /* low-level path  */
     };
 
