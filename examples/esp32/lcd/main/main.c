@@ -24,7 +24,6 @@ static const char *TAG = "MAIN";
 
 #define RETRY_DELAY_MS   2000
 #define MAX_FAIL_STREAK     5
-#define DECODE_TIMEOUT_MS  30000
 
 #define JPEG_URL  CONFIG_JPEG_URL
 
@@ -114,7 +113,7 @@ void app_main(void)
         bool started = jpeg_fetch_start(&http, &params);
 
         /* ── Wait ── */
-        bool ok = started && jpeg_fetch_wait(&http, DECODE_TIMEOUT_MS);
+        bool ok = started && jpeg_fetch_wait(&http);
 
         /* ── Advance ── */
         if (ok) {
