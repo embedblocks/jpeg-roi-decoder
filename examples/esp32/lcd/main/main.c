@@ -19,8 +19,6 @@ static const char *TAG = "MAIN";
 #define LCD_W  320
 #define LCD_H  480
 
-#define PAN_X_MAX   600
-#define PAN_Y_MAX   400
 #define PAN_STEP_X   20
 #define PAN_STEP_Y   20
 
@@ -73,26 +71,49 @@ void app_main(void)
         while (1) vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
+    /*
+     * Probe the image before starting the pan loop.
+     *
+     * We need the actual scaled dimensions to:
+     *   1. Set effective_w/h = min(lcd, scaled) so the ROI never exceeds
+     *      image bounds — the component rejects roi.bottom >= scaled_h.
+     *   2. Set correct pan_x_max / pan_y_max so we don't pan past the edge.
+     *   3. Fix the scale factor so every subsequent frame uses the same
+     *      scale without re-running auto-selection per frame.
+     */
+    jpeg_image_meta_t meta;
+    ESP_LOGI(TAG, "Probing image...");
+    while (!jpeg_fetch_probe(&http, LCD_W, LCD_H, &meta)) {
+        ESP_LOGW(TAG, "Probe failed — retrying in %d ms", RETRY_DELAY_MS);
+        vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS));
+    }
+
     pan_state_t pan;
-    pan_init(&pan, PAN_X_MAX, PAN_Y_MAX, PAN_STEP_X, PAN_STEP_Y);
+    pan_init(&pan, meta.pan_x_max, meta.pan_y_max, PAN_STEP_X, PAN_STEP_Y);
 
     ESP_LOGI(TAG, "Starting pan loop — %s", JPEG_URL);
+    ESP_LOGI(TAG, "View: %ux%u  Pan range: x[0..%d] y[0..%d]",
+             meta.effective_w, meta.effective_h,
+             meta.pan_x_max,   meta.pan_y_max);
 
     int fail_streak = 0;
 
     while (1) {
         jpeg_fetch_params_t params = {
-            .url   = JPEG_URL,
-            .lcd_w = LCD_W,
-            .lcd_h = LCD_H,
-            .pan_x = pan.x,
-            .pan_y = pan.y,
+            .url         = JPEG_URL,
+            .lcd_w       = LCD_W,
+            .lcd_h       = LCD_H,
+            .pan_x       = pan.x,
+            .pan_y       = pan.y,
+            .scale       = meta.scale,
+            .effective_w = meta.effective_w,
+            .effective_h = meta.effective_h,
         };
 
         /* ── Fire ── */
         bool started = jpeg_fetch_start(&http, &params);
 
-        /* ── Wait ── (explicitly visible — main does not proceed until done) */
+        /* ── Wait ── */
         bool ok = started && jpeg_fetch_wait(&http, DECODE_TIMEOUT_MS);
 
         /* ── Advance ── */
@@ -108,7 +129,8 @@ void app_main(void)
                 http_stream_deinit(&http);
                 vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS));
                 http_stream_init(&http, JPEG_URL);
-                pan_init(&pan, PAN_X_MAX, PAN_Y_MAX, PAN_STEP_X, PAN_STEP_Y);
+                pan_init(&pan, meta.pan_x_max, meta.pan_y_max,
+                         PAN_STEP_X, PAN_STEP_Y);
                 fail_streak = 0;
             } else {
                 vTaskDelay(pdMS_TO_TICKS(RETRY_DELAY_MS));
