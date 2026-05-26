@@ -3,6 +3,8 @@
 
 static const char *TAG = "LCD_OUTPUT";
 
+#define RGB565(r,g,b) __builtin_bswap16((uint16_t)((((r)&0xF8)<<8)|(((g)&0xFC)<<3)|((b)>>3)))
+
 static esp_lcd_panel_handle_t s_panel       = NULL;
 static int                    s_current_row = 0;
 
@@ -27,16 +29,16 @@ bool lcd_on_chunk(const jpeg_chunk_event_t *evt)
 {
     if (!s_panel) return false;
 
-    /*
-     * The decoder gives us one full row of RGB565 pixels.
-     * draw_bitmap(x0, y0, x1_excl, y1_excl, data):
-     *   - x range: 0 … evt->width  (exclusive end)
-     *   - y range: s_current_row … s_current_row + 1
-     *
-     * This pushes exactly one scanline to the display with no
-     * intermediate copy — the decoder's chunk_buffer IS the
-     * source buffer for the SPI transfer.
-     */
+    // 1. Get a pointer to the decoded pixels
+    uint16_t *pixels = (uint16_t *)evt->pixels;
+    
+    // 2. Swap the endianness of every pixel in this row
+    // For a 320-wide screen, this loop takes ~5 microseconds.
+    for (int i = 0; i < evt->width; i++) {
+        pixels[i] = __builtin_bswap16(pixels[i]);
+    }
+
+    // 3. Send to display
     esp_err_t err = esp_lcd_panel_draw_bitmap(
         s_panel,
         0,              s_current_row,
@@ -45,18 +47,17 @@ bool lcd_on_chunk(const jpeg_chunk_event_t *evt)
     );
 
     if (err != ESP_OK) {
-        /* Non-fatal: log and continue rather than aborting the frame */
         ESP_LOGW(TAG, "draw_bitmap row %d: %s", s_current_row, esp_err_to_name(err));
     }
 
     s_current_row++;
     return true;
 }
-
 /* ── Done callback ────────────────────────────────────────────────────────── */
 
 void lcd_on_done(const jpeg_done_event_t *evt)
 {
-    ESP_LOGD(TAG, "Frame complete — %d rows drawn", s_current_row);
+    //ESP_LOGD(TAG, "Frame complete — %d rows drawn", s_current_row);
+    ESP_LOGI(TAG, "Frame complete");
     (void)evt;
 }
