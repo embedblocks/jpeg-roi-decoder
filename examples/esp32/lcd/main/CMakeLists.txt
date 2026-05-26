@@ -2,10 +2,9 @@ idf_component_register(
     SRCS
         "main.c"
         "lcd_init.c"
-        "http_stream.c"
         "lcd_output.c"
         "pan_control.c"
-        "jpeg_fetch.c"
+       
     INCLUDE_DIRS
         "."
     REQUIRES
