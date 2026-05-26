@@ -83,6 +83,7 @@ size_t http_stream_read_cb(uint8_t *dst, size_t max, void *vctx)
             if (r <= 0) { ctx->eof = true; break; }
             skipped += r; ctx->bytes_total += r;
         }
+        ESP_LOGI(TAG, "skipped %d bytes", skipped);
         return skipped;
     }
 
@@ -90,5 +91,6 @@ size_t http_stream_read_cb(uint8_t *dst, size_t max, void *vctx)
     if (r < 0) { ctx->error = true; return 0; }
     if (r == 0) { ctx->eof  = true; return 0; }
     ctx->bytes_total += r;
+    ESP_LOGI(TAG, "read %d bytes  , total buffer size: %d", r, max);
     return (size_t)r;
 }

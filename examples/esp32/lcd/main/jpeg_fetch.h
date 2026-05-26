@@ -1,10 +1,11 @@
+/*
 #pragma once
 
 #include <stdbool.h>
 #include <stdint.h>
 #include "http_stream.h"
 #include "jpeg_roi_decoder.h"
-
+*/
 /* ============================================================
  *  jpeg_fetch — async JPEG fetch+decode, probe-then-decode model.
  *
@@ -25,6 +26,7 @@
  *  No cross-task socket close is needed or safe.
  * ============================================================ */
 
+ /*
 typedef struct {
     uint16_t            img_w;
     uint16_t            img_h;
@@ -58,9 +60,12 @@ bool jpeg_fetch_probe (http_stream_ctx_t       *ctx,
 bool jpeg_fetch_start (http_stream_ctx_t       *ctx,
                        const jpeg_fetch_params_t *params);
 
-/**
+*/
+
+/*
  * Block until on_done fires (portMAX_DELAY — always safe).
  * Drains and closes the HTTP request before returning.
  * Returns true if the decode completed with JPEG_DECODE_OK.
  */
-bool jpeg_fetch_wait  (http_stream_ctx_t *ctx);
+//bool jpeg_fetch_wait  (http_stream_ctx_t *ctx);
+

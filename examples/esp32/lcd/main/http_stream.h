@@ -1,3 +1,4 @@
+/*
 #pragma once
 
 #include <stddef.h>
@@ -17,3 +18,5 @@ void   http_stream_deinit       (http_stream_ctx_t *ctx);
 bool   http_stream_request_open (http_stream_ctx_t *ctx);
 void   http_stream_request_close(http_stream_ctx_t *ctx);
 size_t http_stream_read_cb      (uint8_t *dst, size_t max, void *vctx);
+
+*/
