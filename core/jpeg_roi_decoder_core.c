@@ -305,7 +305,7 @@ jpeg_decoder_core_run_view(
         .done_cb             = done_cb,
         .user_data           = user_data,
         .abort               = false,
-        .input_buf           = intent->input_buffer,   /* NULL = direct pass-through */
+        .input_buf           = intent->input_buffer,
         .input_buf_len       = 0,
         .input_buf_pos       = 0,
     };
@@ -320,7 +320,6 @@ jpeg_decoder_core_run_view(
         return JPEG_DECODE_ERR_INPUT;
     }
 
-    /* Resolve scale now that jd.width / jd.height are valid */
     jpeg_decode_scale_t scale = intent->scale;
     if (scale == JPEG_SCALE_AUTO)
         scale = jpeg_decoder_auto_scale(jd.width, jd.height,
@@ -336,14 +335,13 @@ jpeg_decoder_core_run_view(
     ctx.image_width  = scaled_w;
     ctx.image_height = scaled_h;
 
-    /* Centered + panned ROI in scaled (output) coords */
     int32_t cx     = ((int32_t)scaled_w - lcd_w) / 2 + intent->pan_x;
     int32_t cy     = ((int32_t)scaled_h - lcd_h) / 2 + intent->pan_y;
     int32_t max_cx = (int32_t)scaled_w - lcd_w;
     int32_t max_cy = (int32_t)scaled_h - lcd_h;
 
-    ESP_LOGI(TAG, "pre-clamp:  cx=%ld cy=%ld  max_cx=%ld max_cy=%ld",
-             cx, cy, max_cx, max_cy);
+  //  ESP_LOGI(TAG, "pre-clamp:  cx=%ld cy=%ld  max_cx=%ld max_cy=%ld",
+    //         cx, cy, max_cx, max_cy);
 
     if (cx < 0)                      cx = 0;
     if (cy < 0)                      cy = 0;
@@ -355,14 +353,16 @@ jpeg_decoder_core_run_view(
     ctx.roi.right  = (uint16_t)(cx + lcd_w - 1);
     ctx.roi.bottom = (uint16_t)(cy + lcd_h - 1);
 
-    ESP_LOGI(TAG, "post-clamp: cx=%ld cy=%ld", cx, cy);
-    ESP_LOGI(TAG, "ROI(scaled): left=%u top=%u right=%u bottom=%u",
-             ctx.roi.left, ctx.roi.top, ctx.roi.right, ctx.roi.bottom);
+    /* Clamp ROI to actual scaled image bounds instead of hard-rejecting */
+    if (ctx.roi.right  >= ctx.image_width)   ctx.roi.right  = ctx.image_width  - 1;
+    if (ctx.roi.bottom >= ctx.image_height)  ctx.roi.bottom = ctx.image_height - 1;
 
-    if (ctx.roi.left   >  ctx.roi.right         ||
-        ctx.roi.top    >  ctx.roi.bottom         ||
-        ctx.roi.right  >= ctx.image_width        ||
-        ctx.roi.bottom >= ctx.image_height) {
+   // ESP_LOGI(TAG, "post-clamp: cx=%ld cy=%ld", cx, cy);
+    //ESP_LOGI(TAG, "ROI(scaled): left=%u top=%u right=%u bottom=%u",
+      //       ctx.roi.left, ctx.roi.top, ctx.roi.right, ctx.roi.bottom);
+
+    if (ctx.roi.left   >  ctx.roi.right  ||
+        ctx.roi.top    >  ctx.roi.bottom) {
         fire_done(done_cb, user_data, JPEG_DECODE_ERR_PARAM,
                   &jd, &ctx, scale, intent->out_format);
         return JPEG_DECODE_ERR_PARAM;
@@ -383,17 +383,15 @@ jpeg_decoder_core_run_view(
         return JPEG_DECODE_ERR_PARAM;
     }
 
-    /* Stream cursor is already past headers — no rewind needed */
     jr = tjpgd_sys_decomp(&jd, output_func, scale);
 
-    if      (ctx.abort)    result = JPEG_DECODE_ABORTED;
+    if      (ctx.abort)    result = JPEG_DECODE_OK;
     else if (jr == JDR_OK) result = JPEG_DECODE_OK;
     else                   result = JPEG_DECODE_ERR_INTR;
 
     fire_done(done_cb, user_data, result, &jd, &ctx, scale, intent->out_format);
     return result;
 }
-
 /* ============================================================
  *  Low-level core runner
  *
@@ -421,7 +419,7 @@ jpeg_decoder_core_run_request(const jpeg_decode_request_t *req)
 
     decode_context_t ctx = {
         .reader              = req->reader,
-        .roi                 = req->roi,   /* will be scaled below */
+        .roi                 = req->roi,
         .scale               = req->scale,
         .out_format          = req->out_format,
         .chunk_buffer        = req->chunk_buffer,
@@ -430,7 +428,7 @@ jpeg_decoder_core_run_request(const jpeg_decode_request_t *req)
         .done_cb             = req->done_callback,
         .user_data           = req->user_data,
         .abort               = false,
-        .input_buf           = req->input_buffer,      /* NULL = direct pass-through */
+        .input_buf           = req->input_buffer,
         .input_buf_len       = 0,
         .input_buf_pos       = 0,
     };
@@ -447,7 +445,6 @@ jpeg_decoder_core_run_request(const jpeg_decode_request_t *req)
         return JPEG_DECODE_ERR_INPUT;
     }
 
-    /* Convert unscaled ROI → scaled (output) coords */
     uint16_t div       = 1u << (uint8_t)ctx.scale;
     ctx.image_width    = jd.width  / div;
     ctx.image_height   = jd.height / div;
@@ -456,10 +453,12 @@ jpeg_decoder_core_run_request(const jpeg_decode_request_t *req)
     ctx.roi.right      = req->roi.right  / div;
     ctx.roi.bottom     = req->roi.bottom / div;
 
-    if (ctx.roi.left   >  ctx.roi.right         ||
-        ctx.roi.top    >  ctx.roi.bottom         ||
-        ctx.roi.right  >= ctx.image_width        ||
-        ctx.roi.bottom >= ctx.image_height) {
+    /* Clamp ROI to actual scaled image bounds instead of hard-rejecting */
+    if (ctx.roi.right  >= ctx.image_width)   ctx.roi.right  = ctx.image_width  - 1;
+    if (ctx.roi.bottom >= ctx.image_height)  ctx.roi.bottom = ctx.image_height - 1;
+
+    if (ctx.roi.left   >  ctx.roi.right  ||
+        ctx.roi.top    >  ctx.roi.bottom) {
         fire_done(req->done_callback, req->user_data, JPEG_DECODE_ERR_PARAM,
                   &jd, &ctx, ctx.scale, ctx.out_format);
         return JPEG_DECODE_ERR_PARAM;
@@ -480,11 +479,10 @@ jpeg_decoder_core_run_request(const jpeg_decode_request_t *req)
         return JPEG_DECODE_ERR_PARAM;
     }
 
-    /* Stream cursor already past headers — no rewind needed */
     jr = tjpgd_sys_decomp(&jd, output_func, ctx.scale);
 
     jpeg_decode_result_t result;
-    if      (ctx.abort)    result = JPEG_DECODE_ABORTED;
+    if      (ctx.abort)    result = JPEG_DECODE_OK;
     else if (jr == JDR_OK) result = JPEG_DECODE_OK;
     else                   result = JPEG_DECODE_ERR_INTR;
 
@@ -492,7 +490,6 @@ jpeg_decoder_core_run_request(const jpeg_decode_request_t *req)
               &jd, &ctx, ctx.scale, ctx.out_format);
     return result;
 }
-
 /* ============================================================
  *  Probe — reads only headers, returns dimensions
  *
