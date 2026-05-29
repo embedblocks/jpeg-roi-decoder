@@ -65,6 +65,9 @@ esp_err_t ili9486_display_init(on_color_trans_done_callback cb)
         .spi_mode          = 0,
         .trans_queue_depth = 1,
         .on_color_trans_done = cb,  // ← registered here
+        
+        
+        
     };
     ESP_RETURN_ON_ERROR(
         esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST,
@@ -92,12 +95,15 @@ esp_err_t ili9486_display_init(on_color_trans_done_callback cb)
     ESP_ERROR_CHECK(esp_lcd_panel_init(s_panel));
     /* MADCTL removed — driver init sequence handles it correctly */
     ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(s_panel, true));       // rotate 90°: MV bit
-    ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, true, false));
+    //ESP_ERROR_CHECK(esp_lcd_panel_mirror(s_panel, false, true));
+
+    //esp_lcd_panel_set_gap(s_panel, 160, 0);
 
     ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(s_panel, true));
     gpio_set_level(PIN_NUM_BK_LIGHT, 1);
 
     ESP_LOGI(TAG, "ILI9486 basic initialization complete");
+    
     return ESP_OK;
 }
 
