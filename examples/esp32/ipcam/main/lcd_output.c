@@ -63,37 +63,27 @@ bool lcd_on_chunk(const jpeg_chunk_event_t *evt)
 {
     if (!s_panel) return false;
 
-    //Wait for the previous signal color done to send next data
     xSemaphoreTake(signal_color_done, portMAX_DELAY);
 
-    // 1. Get a pointer to the decoded pixels
     uint16_t *pixels = (uint16_t *)evt->pixels;
+
     
-    // 2. Swap the endianness of every pixel in this row
-    // For a 320-wide screen, this loop takes ~5 microseconds.
     for (int i = 0; i < evt->width; i++) {
         pixels[i] = __builtin_bswap16(pixels[i]);
     }
 
-    // 3. Send to display
-    //ESP_LOGI(TAG,"to draw");
-    esp_err_t err = esp_lcd_panel_draw_bitmap(
+   ESP_LOGI(TAG, "Drawing bitmap: (%d, %d) - (%d, %d), size: %d bytes",
+             evt->x, evt->y, evt->x + evt->width, evt->y + 1, evt->width * 2);
+    // Just draw as normal portrait row — swap_xy handles the rotation
+    esp_lcd_panel_draw_bitmap(
         s_panel,
-        0,              s_current_row,
-        evt->width,     s_current_row + 1,
+        0,           evt->y,
+        evt->width,  evt->y + 1,
         evt->pixels
     );
 
-    
-
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "draw_bitmap row %d: %s", s_current_row, esp_err_to_name(err));
-    }
-
-    s_current_row++;
     return true;
-}
-/* ── Done callback ────────────────────────────────────────────────────────── */
+}/* ── Done callback ────────────────────────────────────────────────────────── */
 
 void lcd_on_done(const jpeg_done_event_t *evt)
 {
