@@ -189,6 +189,8 @@ static int output_func(JDEC *jd, void *bitmap, JRECT *rect)
         uint16_t roi_y = y - ctx->roi.top;
         uint16_t roi_x = x_start - ctx->roi.left;
 
+        
+
         if (roi_y >= JPEG_MAX_ROI_HEIGHT) {
             ctx->abort = true;
             return 0;
@@ -340,8 +342,8 @@ jpeg_decoder_core_run_view(
     int32_t max_cx = (int32_t)scaled_w - lcd_w;
     int32_t max_cy = (int32_t)scaled_h - lcd_h;
 
-  //  ESP_LOGI(TAG, "pre-clamp:  cx=%ld cy=%ld  max_cx=%ld max_cy=%ld",
-    //         cx, cy, max_cx, max_cy);
+    ESP_LOGD(TAG, "pre-clamp:  cx=%ld cy=%ld  max_cx=%ld max_cy=%ld",
+           cx, cy, max_cx, max_cy);
 
     if (cx < 0)                      cx = 0;
     if (cy < 0)                      cy = 0;
@@ -357,9 +359,9 @@ jpeg_decoder_core_run_view(
     if (ctx.roi.right  >= ctx.image_width)   ctx.roi.right  = ctx.image_width  - 1;
     if (ctx.roi.bottom >= ctx.image_height)  ctx.roi.bottom = ctx.image_height - 1;
 
-   // ESP_LOGI(TAG, "post-clamp: cx=%ld cy=%ld", cx, cy);
-    //ESP_LOGI(TAG, "ROI(scaled): left=%u top=%u right=%u bottom=%u",
-      //       ctx.roi.left, ctx.roi.top, ctx.roi.right, ctx.roi.bottom);
+    ESP_LOGD(TAG, "post-clamp: cx=%ld cy=%ld", cx, cy);
+    ESP_LOGD(TAG, "ROI(scaled): left=%u top=%u right=%u bottom=%u",
+           ctx.roi.left, ctx.roi.top, ctx.roi.right, ctx.roi.bottom);
 
     if (ctx.roi.left   >  ctx.roi.right  ||
         ctx.roi.top    >  ctx.roi.bottom) {
