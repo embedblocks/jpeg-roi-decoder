@@ -1,0 +1,8 @@
+menu "JPEG IP Camera Example"
+
+    config IPCAM_URL
+        string "IP Camera Snapshot URL"
+        default "http://192.168.10.15:85/images/snapshot.jpg"
+        help
+            IP Camera Snapshot URL
+endmenu
