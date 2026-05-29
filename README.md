@@ -42,14 +42,14 @@ queue, a TCP socket, or a DMA ring buffer. If you can hand bytes to a callback, 
 ## Installation
 
 ```bash
-idf.py add-dependency "jpeg_roi_decoder^0.3.0"
+idf.py add-dependency "jpeg_roi_decoder^0.5.0"
 ```
 
 Or in `idf_component.yml`:
 
 ```yaml
 dependencies:
-  jpeg_roi_decoder: "^0.3.0"
+  jpeg_roi_decoder: "^0.5.0"
 ```
 
 ---
@@ -352,7 +352,7 @@ jpeg_decoder_decode(&req);
 ## Examples
 
 * `examples/uart` — Flash-embedded JPEG decoded and streamed over UART to a PC receiver script
-* `examples/http` — JPEG fetched live over HTTPS and decoded in a single streaming pass;
+* `examples/https` — JPEG fetched live over HTTPS and decoded in a single streaming pass;
   demonstrates `input_buffer` and correct HTTP resource lifetime
 
   ![Lenna](https://i.gzn.jp/img/2009/06/18/lenna/000.jpg)
@@ -361,6 +361,11 @@ jpeg_decoder_decode(&req);
   and rendered pixel-row by pixel-row.*
 
 * `examples/sdcard` — JPEG read from SD card, decoded RGB565 written back to SD card
+* `examples/lcd` — JPEG fetched live over HTTPS onto an ILI9486 320×480 (portrait) LCD.
+  Demonstrates `input_buffer`, correct HTTP resource lifetime, pan control, and FreeRTOS async notification.
+
+* `examples/ipcam` — Same IPCAM jpeg URL streaming path onto an ILI9486 480×320 (landscape) LCD.
+  Demonstrates hardware `swap_xy` orientation, `swap_color_bytes` SPI configuration, and a DMA semaphore in `on_chunk`.
 
 ---
 
