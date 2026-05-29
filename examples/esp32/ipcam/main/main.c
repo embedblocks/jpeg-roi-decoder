@@ -240,6 +240,9 @@ static void wifi_init(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "URL: %s", IPCAM_URL);
+    esp_log_level_set("MAIN", ESP_LOG_NONE);
+    esp_log_level_set("LCD_OUTPUT", ESP_LOG_NONE);
+    esp_log_level_set("ili9486", ESP_LOG_NONE);
 
     /* NVS + netif — required by example_connect() */
 
@@ -260,7 +263,7 @@ void app_main(void)
     while (1) {
 
     
-
+        esp_log_level_set("main",ESP_LOG_NONE);
         ESP_LOGI(TAG, "Opening HTTP stream...");
         bool ret=http_open(IPCAM_URL);
         if (ret) {
@@ -272,9 +275,9 @@ void app_main(void)
             view.out_format   = JPEG_OUTPUT_RGB565;
             view.chunk_buffer = chunk_buf;
             view.input_buffer = input_buf;
-            view.scale        = JPEG_SCALE_1_2;
+            view.scale        = JPEG_SCALE_1_1;
             view.pan_x        = 0;
-            view.pan_y        = 100;
+            view.pan_y        = 0;
             view.reader       = (jpeg_reader_t){
                 .cb  = http_read_cb,
                 .ctx = &http_ctx,
@@ -297,7 +300,7 @@ void app_main(void)
 
 
                 ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-                vTaskDelay(100 / portTICK_PERIOD_MS);
+                vTaskDelay(1 / portTICK_PERIOD_MS);
             }
 
             else {
