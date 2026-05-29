@@ -21,7 +21,7 @@
  * Store the panel handle for use by the chunk callback.
  * Must be called once before the first frame.
  */
-void lcd_output_init(esp_lcd_panel_handle_t panel);
+esp_err_t lcd_output_init();
 
 /**
  * Reset internal row counter to 0.

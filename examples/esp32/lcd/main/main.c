@@ -10,6 +10,7 @@
 #include "protocol_examples_common.h"
 #include "jpeg_roi_decoder.h"
 #include "lcd_init.h"
+//#include "segger_sysview.h"
 
 //#include "http_stream.h"
 #include "lcd_output.h"
@@ -31,8 +32,9 @@ static const char *TAG = "MAIN";
 
 
 static uint8_t  workbuf[JPEG_DECODER_WORK_BUF_DEFAULT];
-static uint16_t chunk_buf[JPEG_CHUNK_BUF_PIXELS(LCD_W)];
-static uint8_t  input_buf[JPEG_INPUT_BUF_SIZE];
+static uint16_t chunk_buf[JPEG_CHUNK_BUF_PIXELS(LCD_W)] __attribute__((aligned(4))); 
+//static uint8_t  input_buf[JPEG_INPUT_BUF_SIZE];
+static uint8_t input_buf[JPEG_INPUT_BUF_SIZE] __attribute__((aligned(4)));
 
 static TaskHandle_t main_task_handle = NULL;
 
@@ -111,6 +113,8 @@ static size_t http_read_cb(uint8_t *dst, size_t max, void *vctx)
     int r = esp_http_client_read(ctx->client, (char *)dst, max);
     //ESP_LOGI(TAG, "read %d bytes  , total buffer size: %d", r, max);
 
+
+    //ESP_LOGI(TAG, "Reading %d bytes", r);
     #ifdef DEBUG
             ESP_LOGI(TAG, "Reading %d bytes", r);
     #endif
@@ -136,6 +140,9 @@ static bool on_chunk(const jpeg_chunk_event_t *evt)
     if (evt->width != LCD_W) {
         return false;
     }
+
+    //UBaseType_t watermark = uxTaskGetStackHighWaterMark(NULL);
+    //ESP_LOGI(TAG, "Stack watermark: %u words remaining", watermark);
 
     #ifndef DEBUG
 
@@ -229,16 +236,9 @@ static void on_done(const jpeg_done_event_t *evt)
 }
 
 
-static void lcd_init(void)
-{
-    ESP_ERROR_CHECK(ili9486_display_init());
-    esp_lcd_panel_handle_t panel = ili9486_display_get_panel();
-    if (!panel) {
-        ESP_LOGE(TAG, "Failed to get panel handle");
-        while (1) vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    lcd_output_init(panel);
-}
+
+
+
 
 static void wifi_init(void)
 {
@@ -255,8 +255,14 @@ static void wifi_init(void)
     ESP_LOGI(TAG, "WiFi connected");
 }
 
+
+
 void app_main(void)
 {
+
+
+     
+
     ESP_LOGI(TAG, "URL: %s", JPEG_URL);
 
     /* NVS + netif — required by example_connect() */
@@ -265,14 +271,14 @@ void app_main(void)
 
     
         /* LCD init */
-    lcd_init();
+    ESP_ERROR_CHECK(lcd_output_init());
     /* JPEG decoder */
     jpeg_decoder_init();
 
     pan_state_t p;
 
     pan_init(&p,
-              50, 50,
+              30, 30,
               10, 10);
 
 
@@ -319,6 +325,7 @@ void app_main(void)
             ESP_LOGI(TAG, "Done — %d bytes from HTTP", http_ctx.bytes_total);
 
 
+                //Wait for the decoder on done to start a new cycle
                 ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
                 vTaskDelay(100 / portTICK_PERIOD_MS);
             }

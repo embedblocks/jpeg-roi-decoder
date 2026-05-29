@@ -13,6 +13,7 @@
 #include "esp_ili9486_panel.h"
 #include "lcd_init.h"
 
+
 static const char *TAG = "ili9486_display";
 
 /* ------------------------- */
@@ -37,7 +38,7 @@ static const char *TAG = "ili9486_display";
 static esp_lcd_panel_io_handle_t s_io_handle = NULL;
 static esp_lcd_panel_handle_t   s_panel      = NULL;
 
-esp_err_t ili9486_display_init(void)
+esp_err_t ili9486_display_init(on_color_trans_done_callback cb)
 {
     esp_err_t ret;
 
@@ -63,6 +64,7 @@ esp_err_t ili9486_display_init(void)
         .lcd_param_bits    = 8,
         .spi_mode          = 0,
         .trans_queue_depth = 1,
+        .on_color_trans_done = cb,  // ← registered here
     };
     ESP_RETURN_ON_ERROR(
         esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST,

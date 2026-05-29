@@ -10,7 +10,11 @@
 extern "C" {
 #endif
 
-esp_err_t ili9486_display_init(void);
+typedef bool (*on_color_trans_done_callback)(esp_lcd_panel_io_handle_t io,
+                                esp_lcd_panel_io_event_data_t *edata,
+                                void *ctx);
+
+esp_err_t ili9486_display_init(on_color_trans_done_callback cb);
 
 esp_lcd_panel_handle_t ili9486_display_get_panel(void);
 #ifdef __cplusplus
