@@ -19,6 +19,7 @@ static bool on_color_trans_done_cb(esp_lcd_panel_io_handle_t io,
                                 esp_lcd_panel_io_event_data_t *edata,
                                 void *ctx){
 
+   
     xSemaphoreGive(signal_color_done);
     return true;
 
