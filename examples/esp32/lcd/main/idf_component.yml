@@ -1,0 +1,5 @@
+dependencies:
+  #khiyamiftikhar/esp-lcd-ili9486: ^1.0.4
+  esp-lcd-ili9486:
+    git: https://github.com/khiyamiftikhar/esp-lcd-ili9486.git
+    version: fix/666-init

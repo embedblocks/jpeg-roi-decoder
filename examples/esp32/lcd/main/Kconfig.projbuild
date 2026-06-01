@@ -1,0 +1,39 @@
+menu "JPEG LCD Pan Example"
+
+    config JPEG_URL
+        string "JPEG image URL"
+        default "https://i.gzn.jp/img/2009/06/18/lenna/000.jpg"
+        help
+            Full URL of the JPEG image to fetch and display.
+            Must be accessible from the device's WiFi network.
+            HTTPS is supported via the bundled CA certificates.
+
+    config PAN_X_MAX
+        int "Maximum pan X offset (pixels)"
+        default 320
+        help
+            image_width - LCD_W.  Set to 0 if the image fits
+            within the display width (no horizontal panning).
+
+    config PAN_Y_MAX
+        int "Maximum pan Y offset (pixels)"
+        default 480
+        help
+            image_height - LCD_H.  Set to 0 if the image fits
+            within the display height (no vertical panning).
+
+    config PAN_STEP_X
+        int "Horizontal pan step per frame (pixels)"
+        default 20
+        help
+            Pixels to advance horizontally between frames.
+            Smaller = smoother pan, more HTTP requests per second.
+
+    config PAN_STEP_Y
+        int "Vertical pan step per row-wrap (pixels)"
+        default 20
+        help
+            Pixels to step downward each time the horizontal
+            sweep bounces off a wall.
+
+endmenu
