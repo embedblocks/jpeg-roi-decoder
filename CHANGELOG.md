@@ -1,5 +1,12 @@
 # Changelog
 ---
+## [0.5.0] - 2026-05-29
+### Added
+- **lcd** and **ipcam** examples added
+### Fixed
+- Image with dimensions less than lcd/roi now supported
+
+---
 ## [0.4.0] - 2026-05-09
 ### Added
 - **Input prefetch buffer** — new optional `input_buffer` field on `jpeg_view_intent_t` and
