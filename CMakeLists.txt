@@ -1,7 +1,12 @@
+# in subcomponent CMakeLists.txt
+if(NOT DEFINED JPEG_DECODER_THREADING)
+    set(JPEG_DECODER_THREADING "async")
+endif()
+
 if(JPEG_DECODER_THREADING STREQUAL "async")
-    set(ADAPTER_SRC "adapter/async/jpeg_decoder_rtos.c")
+    set(ADAPTER_SRC "adapter/async/jpeg_roi_decoder_rtos.c")
 else()
-    set(ADAPTER_SRC "adapter/sync/jpeg_decoder_sync.c")
+    set(ADAPTER_SRC "adapter/sync/jpeg_roi_decoder_rt_sync.c")
 endif()
 
 idf_component_register(
