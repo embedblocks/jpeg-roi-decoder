@@ -1,5 +1,37 @@
 # Changelog
 ---
+## [0.5.2] — 2026-06-02
+ 
+### Added
+- **Synchronous threading adapter** (`adapter/sync/`) — `jpeg_decoder_decode_view()` and
+  `jpeg_decoder_decode()` block until decode is fully complete on the sync path.
+  The caller's task drives the decode loop; no internal queue or worker task is created.
+- **CMake threading selector** — set `JPEG_DECODER_THREADING` to `"sync"` (default) or
+  `"async"` in your project `CMakeLists.txt` to choose the adapter at build time.
+  The public API is identical either way.
+- **Sync variants of three examples** — `examples/https/sync`, `examples/lcd/sync`,
+  `examples/ipcam/sync` demonstrate the blocking path with correct HTTP resource lifetime.
+### Changed
+- Platform adapter folder renamed from `platform/{desktop,esp}` to `adapter/{sync,async}` —
+  the distinction is threading model, not target platform. Both adapters run on ESP32.
+- Default threading model is now `sync`. Projects relying on the implicit async behaviour
+  must set `JPEG_DECODER_THREADING=async` explicitly — one line, no API changes.
+- `jpeg_decoder_init()` and `jpeg_decoder_deinit()` are no-ops on the sync path.
+  Calling them is harmless but not required.
+- README restructured: threading model gets its own top-level section; buffer lifetime and
+  return value semantics documented separately for sync and async paths.
+### Fixed
+- Removed two hardcoded debug coordinate checks left over from a development session
+  (`rect->left == 304 && rect->top == 48` and `roi_y >= 55 && roi_y <= 65`) from
+  `jpeg_decoder_core.c`.
+---
+
+## [0.5.1] — 2026-06-02
+### Fixed
+- The esp registry link used for esp-lcd-ili9486 insead of git link
+
+
+---
 ## [0.5.0] - 2026-05-29
 ### Added
 - **lcd** and **ipcam** examples added
