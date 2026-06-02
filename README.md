@@ -23,8 +23,7 @@ queue, a TCP socket, or a DMA ring buffer. If you can hand bytes to a callback, 
 * **RGB565 and RGB888 output**
 * **Zero heap allocation** — work buffer, chunk buffer, and input buffer are all caller-supplied
 * **Optional input prefetch buffer** — batches the decoder's many small internal reads into fewer large chunk-sized calls, reducing per-call overhead for sources where each callback invocation is expensive (HTTP, socket, UART, queue)
-* **FreeRTOS async** — enqueue a job and return; decode runs in a dedicated worker task
-* **Synchronous path** — for bare-metal builds and host-side testing
+* **Two threading models** — synchronous blocking call (caller owns the thread) or FreeRTOS async (component owns a worker task); selected at build time, same API either way
 
 ---
 
@@ -42,15 +41,60 @@ queue, a TCP socket, or a DMA ring buffer. If you can hand bytes to a callback, 
 ## Installation
 
 ```bash
-idf.py add-dependency "jpeg_roi_decoder^0.5.0"
+idf.py add-dependency "jpeg_roi_decoder^0.5.2"
 ```
 
 Or in `idf_component.yml`:
 
 ```yaml
 dependencies:
-  jpeg_roi_decoder: "^0.5.0"
+  jpeg_roi_decoder: "^0.5.2"
 ```
+
+---
+
+## Threading Model
+
+The component ships two platform adapters. Select one at build time via CMake — the public API is identical either way.
+
+### Synchronous (default)
+
+`jpeg_decoder_decode_view()` and `jpeg_decoder_decode()` block until the full image is decoded. The caller's task drives the decode loop. `on_done` fires before the call returns.
+
+```
+while (1) {
+    http_open(url);
+    jpeg_decoder_decode_view(...);   // blocks — on_chunk fires per row, on_done fires at end
+    http_close();                    // safe — decode is fully complete
+}
+```
+
+This is the right choice when the calling task has one job: fetch and display. No extra stack, no queue, no synchronization primitives needed.
+
+### Asynchronous (FreeRTOS)
+
+`jpeg_decoder_decode_view()` and `jpeg_decoder_decode()` enqueue the job and return immediately. Decode runs in a dedicated worker task. `on_done` fires from the worker task when complete.
+
+```
+jpeg_decoder_decode_view(...);   // returns immediately — job is queued
+ulTaskNotifyTake(...);           // caller waits for on_done to signal completion
+```
+
+Use this when the calling task must stay responsive while decode runs — for example, handling touch input or driving a UI alongside decoding.
+
+### Selecting the adapter
+
+In your project `CMakeLists.txt` before adding the component:
+
+```cmake
+# default — no entry needed
+set(JPEG_DECODER_THREADING "sync")
+
+# or, to use the internal FreeRTOS worker task
+set(JPEG_DECODER_THREADING "async")
+```
+
+`jpeg_decoder_init()` and `jpeg_decoder_deinit()` are no-ops on the sync path. On the async path, `jpeg_decoder_init()` creates the queue and worker task and must be called before any decode.
 
 ---
 
@@ -351,28 +395,42 @@ jpeg_decoder_decode(&req);
 
 ## Examples
 
-* `examples/uart` — Flash-embedded JPEG decoded and streamed over UART to a PC receiver script
-* `examples/https` — JPEG fetched live over HTTPS and decoded in a single streaming pass;
-  demonstrates `input_buffer` and correct HTTP resource lifetime
+| Example | Source | Output | Threading | Notes |
+|---|---|---|---|---|
+| `examples/async/uart` | Flash blob | UART | sync | Embedded JPEG streamed to PC receiver script |
+| `examples/async/https` | HTTPS | LCD | async | Same as above with FreeRTOS worker task |
+| `examples/async/sdcard` | SD card | SD card | sync | RGB565 output written back to SD card |
+| `examples/async/lcd` | HTTPS | ILI9486 LCD | async | Same with FreeRTOS async notification |
+| `examples/async/ipcam` | HTTP IPCAM | ILI9486 LCD | async | Same with FreeRTOS worker task |
+| `examples/sync/https` | HTTPS | LCD | sync | Single-pass HTTPS decode with `input_buffer` |
+| `examples/sync/lcd` | HTTPS | ILI9486 LCD | sync | Pan control, `input_buffer`, correct HTTP lifetime |
+| `examples/sync/ipcam` | HTTP IPCAM | ILI9486 LCD | sync | Continuous frame loop, `swap_xy`, DMA semaphore |
 
-  ![Lenna](https://i.gzn.jp/img/2009/06/18/lenna/000.jpg)
-
-  *512 × 512 px JPEG (~32 KB) streamed from a live HTTPS endpoint, decoded on-chip,
-  and rendered pixel-row by pixel-row.*
-
-* `examples/sdcard` — JPEG read from SD card, decoded RGB565 written back to SD card
-* `examples/lcd` — JPEG fetched live over HTTPS onto an ILI9486 320×480 (portrait) LCD.
-  Demonstrates `input_buffer`, correct HTTP resource lifetime, pan control, and FreeRTOS async notification.
-
-* `examples/ipcam` — Same IPCAM jpeg URL streaming path onto an ILI9486 480×320 (landscape) LCD.
-  Demonstrates hardware `swap_xy` orientation, `swap_color_bytes` SPI configuration, and a DMA semaphore in `on_chunk`.
 
 ---
 
 ## Buffer Lifetime
 
-`jpeg_decoder_decode_view()` and `jpeg_decoder_decode()` return immediately on the RTOS path —
-the worker task decodes in the background. Four things must remain valid until `done_callback` fires:
+### Synchronous path
+
+All buffers are only needed for the duration of the blocking call. Since `jpeg_decoder_decode_view()` does not return until `on_done` has fired, stack-allocated buffers are safe as long as the call is on the stack. `static` is still the simplest choice on embedded targets.
+
+Resource cleanup belongs in the caller, after the call returns — not in `on_done`:
+
+```c
+/* correct — decode is fully complete when the call returns */
+jpeg_decoder_decode_view(...);
+http_close();
+
+/* also correct — on_done fires before the call returns, cleanup there is fine too */
+static void on_done(const jpeg_done_event_t *evt) {
+    http_close();
+}
+```
+
+### Asynchronous path
+
+`jpeg_decoder_decode_view()` returns immediately — the worker task decodes in the background. Four things must remain valid until `done_callback` fires:
 
 | | Must stay valid until |
 |---|---|
@@ -381,7 +439,7 @@ the worker task decodes in the background. Four things must remain valid until `
 | `input_buffer` (if set) | `done_callback` |
 | `reader.ctx` and everything it points to | `done_callback` |
 
-Declaring all as `static` is the simplest correct choice on embedded targets.
+Declaring all as `static` is the simplest correct choice.
 
 **If your source owns a connection** (FILE*, HTTP client, socket): do not close it after
 `decode_view` returns. The worker task is still calling your callback. Close the resource
@@ -394,7 +452,7 @@ static void on_done(const jpeg_done_event_t *evt) {
 }
 
 /* crash — worker task still reading when main task closes the connection */
-jpeg_decoder_decode_view(...);   /* returns immediately on RTOS path */
+jpeg_decoder_decode_view(...);   /* returns immediately on async path */
 http_close();                    /* races with worker task */
 ```
 
@@ -402,7 +460,23 @@ http_close();                    /* races with worker task */
 
 ## Return Values
 
-On the **RTOS async path**, the return value of `decode_view` / `decode` reflects queuing only:
+### Synchronous path
+
+The return value is the decode result directly:
+
+| Value | Meaning |
+|---|---|
+| `JPEG_DECODE_OK` | Decode succeeded |
+| `JPEG_DECODE_ERR_PARAM` | Bad argument or invalid ROI |
+| `JPEG_DECODE_ERR_INPUT` | Source read failed or returned 0 too early |
+| `JPEG_DECODE_ERR_MEM` | Work buffer too small |
+| `JPEG_DECODE_ERR_FMT` | Unsupported JPEG format |
+| `JPEG_DECODE_ERR_INTR` | TJpgDec internal error |
+| `JPEG_DECODE_ABORTED` | `chunk_callback` returned false |
+
+### Asynchronous path
+
+The return value reflects queuing only — not decode outcome:
 
 | Value | Meaning |
 |---|---|
@@ -410,10 +484,7 @@ On the **RTOS async path**, the return value of `decode_view` / `decode` reflect
 | `JPEG_DECODE_ERR_PARAM` | Bad argument — not queued |
 | `JPEG_DECODE_ERR_INTR` | Queue full — not queued |
 
-`JPEG_DECODE_OK` does **not** mean the decode succeeded. All decode results — including header
-parse failures and mid-stream errors — arrive via `done_callback.result`.
-
-On the **synchronous path**, the return value is the decode result directly.
+All decode results — including header parse failures and mid-stream errors — arrive via `done_callback.result`.
 
 ---
 
@@ -431,9 +502,10 @@ if you need predictable output dimensions.
 independent of scale. `(0, 0)` centers the image. Values that push outside the image are
 clamped automatically.
 
-**`chunk_callback` must return quickly.** It runs inside the worker task. Blocking on UART TX,
-SPI, or a display driver stalls the entire decode pipeline. For slow peripherals, enqueue the
-pixel row into a FreeRTOS queue and return immediately; a separate task drains it.
+**`chunk_callback` must return quickly.** On the sync path it runs in the caller's task; on
+the async path it runs in the worker task. Either way, blocking on UART TX, SPI, or a display
+driver stalls the entire decode pipeline. For slow peripherals, enqueue the pixel row into a
+FreeRTOS queue and return immediately; a separate task drains it.
 
 **Work buffer must be in accessible RAM.** DRAM or SPIRAM — not flash. Minimum size is
 `JPEG_DECODER_WORK_BUF_MIN` (3096 bytes); `JPEG_DECODER_WORK_BUF_DEFAULT` (4096 bytes)
@@ -441,6 +513,10 @@ is safe for all standard JPEG images.
 
 **Filesystem must be mounted by caller.** The component does not initialize SDMMC, SPI,
 SPIFFS, FATFS, or LittleFS.
+
+**Stack size on the sync path.** The decode runs on the caller's stack. For wide images
+decoded at 1:1 scale, the RGB888 conversion path allocates a per-row line buffer on the
+stack. Ensure the calling task has at least 8 KB of stack.
 
 ---
 
@@ -459,7 +535,7 @@ static void on_done(const jpeg_done_event_t *evt)
 ## Known Limitations
 
 * Maximum ROI height: `JPEG_MAX_ROI_HEIGHT` (512 rows, configurable via Kconfig)
-* RGB888 conversion uses a stack-allocated buffer — avoid 1:1 decodes of very wide images
+* RGB888 conversion uses a stack-allocated line buffer — on the sync path ensure the calling task has at least 8 KB stack; on the async path the worker task stack covers this
 * TJpgDec is not reentrant — do not call from multiple tasks simultaneously
 * Progressive JPEGs are not supported (TJpgDec limitation)
 
